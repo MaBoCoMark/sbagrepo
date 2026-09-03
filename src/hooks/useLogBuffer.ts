@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { ParsedLog, BufferStats } from '../types/log';
 import { parseLogLine, formatBytes } from '../utils/ansi';
@@ -87,6 +88,9 @@ export function useLogBuffer(
     setLogs([]);
     setTotalBytes(0);
     setDroppedCount(0);
+    invoke('clear_memory_logs').catch((err) => {
+      console.warn('[useLogBuffer] 清空后端内存日志失败:', err);
+    });
   }, []);
 
   const exportLogs = useCallback(() => {
@@ -112,6 +116,22 @@ export function useLogBuffer(
     },
     [displayLimit]
   );
+
+  // 挂载时全量恢复后端常驻 20MB 环形缓冲区中的所有历史日志（支持窗口红叉关闭后被托盘唤醒重新拉出）
+  useEffect(() => {
+    invoke<string[]>('get_memory_logs')
+      .then((history) => {
+        if (history && history.length > 0) {
+          console.log(`[useLogBuffer] 正在从后端 20MB 缓冲区恢复 ${history.length} 条历史日志...`);
+          for (const line of history) {
+            addLog(line);
+          }
+        }
+      })
+      .catch((err) => {
+        console.warn('[useLogBuffer] 从后端恢复内存日志失败:', err);
+      });
+  }, [addLog]);
 
   // 监听 Tauri 后端推送的 'log-message'
   useEffect(() => {

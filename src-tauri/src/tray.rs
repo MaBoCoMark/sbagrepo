@@ -1,3 +1,4 @@
+use std::sync::atomic::Ordering;
 use tauri::{
     menu::{Menu, MenuBuilder, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -8,9 +9,33 @@ use crate::state::AppState;
 
 pub const TRAY_ID: &str = "singbox_tray";
 
+/// 唤醒或重新构建主窗口
+/// 若主窗口由于用户点击红叉已被彻底销毁，则重新通过 WebviewWindowBuilder 动态初始化
+pub fn show_or_create_main_window<R: Runtime>(app: &AppHandle<R>) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    } else {
+        println!("[singbox-desktop][tray] 主窗口当前未存在，通过 WebviewWindowBuilder 重新构建并显示");
+        let _ = tauri::WebviewWindowBuilder::new(
+            app,
+            "main",
+            tauri::WebviewUrl::App("index.html".into()),
+        )
+        .title("sing-box Desktop")
+        .inner_size(1000.0, 720.0)
+        .min_inner_size(800.0, 600.0)
+        .resizable(true)
+        .decorations(true)
+        .center()
+        .build();
+    }
+}
+
 /// 构建系统托盘菜单
 /// 包含:
-/// 1. 显示窗口 (点击唤醒并置顶窗口)
+/// 1. 显示主界面 (点击唤醒并置顶窗口，若已关闭则重新初始化)
 /// 2. 分隔线
 /// 3. 第 1 行: normal 模式 / sudo 模式 / not running
 /// 4. 第 2 行: listening 端口 (如 Listening: 12345)
@@ -23,7 +48,7 @@ pub fn create_tray_menu<R: Runtime>(
     port: &str,
     proxy_type: &str,
 ) -> tauri::Result<Menu<R>> {
-    let show_item = MenuItem::with_id(app, "show_window", "显示窗口", true, None::<&str>)?;
+    let show_item = MenuItem::with_id(app, "show_window", "显示主界面", true, None::<&str>)?;
     let sep1 = PredefinedMenuItem::separator(app)?;
 
     // 第 1 行：运行模式状态 (只读状态项，禁用点击)
@@ -78,15 +103,12 @@ pub fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
         .on_menu_event(|app, event| {
             match event.id.as_ref() {
                 "show_window" => {
-                    if let Some(window) = app.get_webview_window("main") {
-                        let _ = window.show();
-                        let _ = window.unminimize();
-                        let _ = window.set_focus();
-                    }
+                    show_or_create_main_window(app);
                 }
                 "quit_app" => {
-                    println!("[singbox-desktop][tray] 收到托盘退出程序请求");
+                    println!("[singbox-desktop][tray] 收到托盘退出程序请求，准备安全清理并退出");
                     if let Some(state) = app.try_state::<AppState>() {
+                        state.is_quitting.store(true, Ordering::SeqCst);
                         let _ = do_stop_process(app, &state);
                     }
                     app.exit(0);
@@ -95,7 +117,7 @@ pub fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
             }
         })
         .on_tray_icon_event(|tray, event| {
-            // 点击托盘图标时响应
+            // 点击托盘图标时响应 (左键唤醒/重建主窗口)
             if let TrayIconEvent::Click {
                 button: MouseButton::Left,
                 button_state: MouseButtonState::Up,
@@ -103,11 +125,7 @@ pub fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
             } = event
             {
                 let app = tray.app_handle();
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.show();
-                    let _ = window.unminimize();
-                    let _ = window.set_focus();
-                }
+                show_or_create_main_window(app);
             }
         });
 

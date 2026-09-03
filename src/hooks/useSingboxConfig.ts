@@ -324,13 +324,26 @@ export function useSingboxConfig(): UseSingboxConfigReturn {
     setUnexpectedExit(null);
   }, []);
 
-  // 组件挂载时自动加载配置、检测二进制并同步覆盖状态
+  // 组件挂载时自动加载配置、检测二进制并同步覆盖状态，同时从后端同步后台运行中的进程状态
   useEffect(() => {
     loadConfig();
     checkBinaryStatus();
     if (overridePort !== null || overrideLogLevel !== null) {
       syncRuntimeOverride(overridePort, overrideLogLevel);
     }
+    // 重新从后端查询进程存活与运行模式（满足主窗口关闭后被托盘唤醒重新初始化的场景）
+    invoke<{ running: boolean; mode: RunningMode; pid: number | null }>('get_process_status')
+      .then((res) => {
+        if (res && res.running) {
+          console.log('[useSingboxConfig] 成功恢复后台运行中的 sing-box 进程状态:', res);
+          setRunningMode(res.mode);
+        } else {
+          setRunningMode('stopped');
+        }
+      })
+      .catch((err) => {
+        console.warn('[useSingboxConfig] 查询后台进程状态失败:', err);
+      });
   }, [loadConfig, checkBinaryStatus, overridePort, overrideLogLevel, syncRuntimeOverride]);
 
   // 监听后端 sing-box 进程退出事件

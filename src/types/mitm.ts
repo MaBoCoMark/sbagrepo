@@ -29,9 +29,6 @@ export interface CertValidationResult {
 }
 
 export interface ImportCertPayload {
-  import_type: 'p12' | 'pem';
-  p12_base64?: string;
-  p12_password?: string;
   cert_pem?: string;
   key_pem?: string;
   store_in_keychain: boolean;

@@ -1,4 +1,17 @@
 /// 字符串与系统工具函数模块
+use tauri::{AppHandle, Emitter, Manager};
+use crate::state::AppState;
+
+/// 统一日志分发：将日志存入 20MB 后端内存环形缓冲区，并实时派发 `log-message` 事件给前端
+pub fn emit_log(app: &AppHandle, message: impl Into<String>) {
+    let msg = message.into();
+    if let Some(state) = app.try_state::<AppState>() {
+        if let Ok(mut buf) = state.log_buffer.lock() {
+            buf.push(msg.clone());
+        }
+    }
+    let _ = app.emit("log-message", msg);
+}
 
 /// 清除日志中的 ANSI 控制字符与转义序列 (包括终端色彩序列如 \x1b[36m 以及孤立的 [36m, [0m, [38;5;32m 等)
 pub fn clean_ansi(input: &str) -> String {

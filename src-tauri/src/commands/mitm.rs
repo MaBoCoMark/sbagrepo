@@ -2,17 +2,16 @@ use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::fs;
 use std::net::TcpListener;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, State};
 use keyring::Entry;
 
 use openssl::asn1::Asn1Time;
-use openssl::pkcs12::Pkcs12;
 use openssl::pkey::PKey;
 use openssl::x509::{X509, X509NameRef, X509VerifyResult};
 
 use crate::paths::{get_app_ca_cert_path, get_app_ca_key_path};
 use crate::state::{AppState, MitmContext};
-use crate::utils::base64_decode;
+use crate::utils::emit_log;
 
 const KEYCHAIN_SERVICE: &str = "com.singbox.desktop.mitm";
 const KEYCHAIN_USER_CA_KEY: &str = "root_ca_private_key";
@@ -27,9 +26,6 @@ pub struct MitmStatus {
 
 #[derive(Deserialize, Debug)]
 pub struct ImportCertPayload {
-    pub import_type: String, // "p12" 或 "pem"
-    pub p12_base64: Option<String>,
-    pub p12_password: Option<String>,
     pub cert_pem: Option<String>,
     pub key_pem: Option<String>,
     pub store_in_keychain: bool,
@@ -74,24 +70,23 @@ fn format_x509_name(name: &X509NameRef) -> String {
 
 /// 辅助函数：校验是否具有 CA 资质
 fn check_is_ca(cert: &X509) -> bool {
-    // 使用 matches! 宏匹配 Ok(Ordering::Equal)，避开 ErrorStack 不能比较的问题
     let is_self_signed = matches!(cert.subject_name().try_cmp(cert.issuer_name()), Ok(Ordering::Equal));
     let is_self_issued = cert.issued(cert) == X509VerifyResult::OK;
     let has_pathlen = cert.pathlen().is_some();
     is_self_signed || is_self_issued || has_pathlen
 }
 
-/// 辅助函数：从 Keychain 或本地读取私钥并加载到内存
-fn load_mitm_into_memory(app: &AppHandle, state: &State<'_, AppState>) -> Result<(), String> {
+/// 辅助函数：从 Keychain 或本地读取证书与私钥 PEM 字符串
+fn load_cert_and_key_pem(app: &AppHandle) -> Result<(String, String), String> {
     let cert_path = get_app_ca_cert_path(app)?;
     if !cert_path.is_file() {
         return Err("找不到本地根证书 (ca.crt)".into());
     }
 
-    let cert_bytes = fs::read(&cert_path).map_err(|e| format!("读取 ca.crt 失败: {}", e))?;
-    let cert = X509::from_pem(&cert_bytes).map_err(|e| format!("解析 ca.crt 失败: {}", e))?;
+    let cert_pem = fs::read_to_string(&cert_path)
+        .map_err(|e| format!("读取 ca.crt 失败: {}", e))?;
 
-    // 优先从钥匙串读取私钥
+    // 优先从钥匙串读取私钥，否则读取本地 ca.key
     let key_pem = if let Ok(entry) = Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_USER_CA_KEY) {
         if let Ok(pwd) = entry.get_password() {
             pwd
@@ -104,6 +99,15 @@ fn load_mitm_into_memory(app: &AppHandle, state: &State<'_, AppState>) -> Result
         fs::read_to_string(&key_path).map_err(|_| "未在钥匙串或本地找到配套私钥".to_string())?
     };
 
+    Ok((cert_pem, key_pem))
+}
+
+/// 辅助函数：从 Keychain 或本地读取私钥并加载到全局内存上下文
+fn load_mitm_into_memory(app: &AppHandle, state: &State<'_, AppState>) -> Result<(), String> {
+    let (cert_pem, key_pem) = load_cert_and_key_pem(app)?;
+
+    let cert = X509::from_pem(cert_pem.as_bytes())
+        .map_err(|e| format!("解析 ca.crt 失败: {}", e))?;
     let pkey = PKey::private_key_from_pem(key_pem.as_bytes())
         .map_err(|e| format!("解析私钥失败: {}", e))?;
 
@@ -113,6 +117,69 @@ fn load_mitm_into_memory(app: &AppHandle, state: &State<'_, AppState>) -> Result
 
     println!("[singbox-desktop][MITM] CA 证书与私钥已载入全局内存！");
     Ok(())
+}
+
+// -------------------------------------------------------------
+// Hudsucker MITM Interceptor
+// -------------------------------------------------------------
+
+#[derive(Clone)]
+pub struct MitmHandler {
+    pub app: AppHandle,
+}
+
+impl hudsucker::HttpHandler for MitmHandler {
+    async fn handle_request(
+        &mut self,
+        _ctx: &hudsucker::HttpContext,
+        _req: hudsucker::hyper::Request<hudsucker::Body>,
+    ) -> hudsucker::RequestOrResponse {
+        let rand_num = rand::random::<u32>() % 100000;
+        let log_msg = format!("[singbox-desktop][MITM] 拦截到请求，分配随机数字: {}", rand_num);
+        println!("{}", log_msg);
+        emit_log(&self.app, format!("[INFO][MITM] 拦截到 HTTP 请求，分配随机数字: {}, header: x-tauri-mitm-message: edited+{}", rand_num, rand_num));
+
+        let header_val = format!("edited+{}", rand_num);
+        let body_content = format!("<h1>Hi from Tarui MitM + {}</h1>", rand_num);
+
+        let response = hudsucker::hyper::Response::builder()
+            .status(hudsucker::hyper::StatusCode::OK)
+            .header("x-tauri-mitm-message", header_val)
+            .header("Content-Type", "text/html; charset=utf-8")
+            .body(hudsucker::Body::from(body_content))
+            .unwrap_or_else(|_| {
+                hudsucker::hyper::Response::builder()
+                    .status(hudsucker::hyper::StatusCode::INTERNAL_SERVER_ERROR) // 或者 OK，按你的业务需求
+                    .body(hudsucker::Body::empty())
+                    .unwrap()
+            });
+
+        hudsucker::RequestOrResponse::Response(response)
+    }
+
+    async fn handle_response(
+        &mut self,
+        _ctx: &hudsucker::HttpContext,
+        mut res: hudsucker::hyper::Response<hudsucker::Body>,
+    ) -> hudsucker::hyper::Response<hudsucker::Body> {
+        let rand_num = rand::random::<u32>() % 100000;
+        let log_msg = format!("[singbox-desktop][MITM] 拦截到响应，分配随机数字: {}", rand_num);
+        println!("{}", log_msg);
+        emit_log(&self.app, format!("[INFO][MITM] 拦截到 HTTP 响应，分配随机数字: {}, header: x-tauri-mitm-message: edited+{}", rand_num, rand_num));
+
+        let header_val = format!("edited+{}", rand_num);
+        let body_content = format!("<h1>Hi from Tarui MitM + {}</h1>", rand_num);
+
+        if let Ok(hv) = hudsucker::hyper::header::HeaderValue::from_str(&header_val) {
+            res.headers_mut().insert("x-tauri-mitm-message", hv);
+        }
+        res.headers_mut().insert(
+            hudsucker::hyper::header::CONTENT_TYPE,
+            hudsucker::hyper::header::HeaderValue::from_static("text/html; charset=utf-8"),
+        );
+        *res.body_mut() = hudsucker::Body::from(body_content);
+        res
+    }
 }
 
 // -------------------------------------------------------------
@@ -139,7 +206,7 @@ pub fn sniff_mitm_port(base_port: u16) -> Result<u16, String> {
 
 /// 开启或关闭 MITM 监听
 #[tauri::command]
-pub fn toggle_mitm_listener(
+pub async fn toggle_mitm_listener(
     app: AppHandle,
     state: State<'_, AppState>,
     enable: bool,
@@ -151,30 +218,66 @@ pub fn toggle_mitm_listener(
     let is_macos = false;
 
     if enable {
-        if let Err(e) = load_mitm_into_memory(&app, &state) {
-            return Err(format!("开启失败，证书载入内存失败: {}", e));
-        }
+        // 尝试加载用户 CA 证书；若尚未导入，生成临时自签 CA 以便直接体验 Hello World 拦截功能
+        let (cert_pem, key_pem) = match load_cert_and_key_pem(&app) {
+            Ok(pair) => {
+                let _ = load_mitm_into_memory(&app, &state);
+                pair
+            }
+            Err(_) => {
+                println!("[singbox-desktop][MITM] 未检测到用户预导入证书，为 Hello World 拦截临时生成内存 CA");
+                let mut params = rcgen::CertificateParams::default();
+                params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+                let mut dn = rcgen::DistinguishedName::new();
+                dn.push(rcgen::DnType::CommonName, "singbox-desktop Development CA");
+                dn.push(rcgen::DnType::OrganizationName, "singbox-desktop");
+                params.distinguished_name = dn;
 
-        let listener = match TcpListener::bind(("127.0.0.1", port)) {
-            Ok(l) => l,
-            Err(e) => {
-                let err_msg = format!("无法在 127.0.0.1:{} 绑定 MITM 监听服务: {}", port, e);
-                let _ = app.emit("log-message", format!("[ERROR][MITM] {}", err_msg));
-                return Err(err_msg);
+                let key = rcgen::KeyPair::generate().map_err(|e| format!("生成临时 CA 密钥失败: {}", e))?;
+                let cert = params.self_signed(&key).map_err(|e| format!("生成临时 CA 证书失败: {}", e))?;
+                (cert.pem(), key.serialize_pem())
             }
         };
 
-        let _ = listener.set_nonblocking(true);
+        let key_pair = rcgen::KeyPair::from_pem(&key_pem)
+            .map_err(|e| format!("解析 CA 私钥为 rcgen KeyPair 失败: {}", e))?;
+        let issuer = rcgen::Issuer::from_ca_cert_pem(&cert_pem, key_pair)
+            .map_err(|e| format!("创建 rcgen Issuer 失败: {}", e))?;
+        let ca = hudsucker::certificate_authority::RcgenAuthority::new(
+            issuer,
+            1_000,
+            hudsucker::rustls::crypto::aws_lc_rs::default_provider(),
+        );
 
-        if let Ok(mut l_guard) = state.mitm_listener.lock() {
-            *l_guard = Some(listener);
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+
+        let proxy = hudsucker::Proxy::builder()
+            .with_addr(std::net::SocketAddr::from(([127, 0, 0, 1], port)))
+            .with_ca(ca)
+            .with_rustls_connector(hudsucker::rustls::crypto::aws_lc_rs::default_provider())
+            .with_http_handler(MitmHandler { app: app.clone() })
+            .with_graceful_shutdown(async move {
+                let _ = shutdown_rx.await;
+            })
+            .build()
+            .map_err(|e| format!("构建 MITM 代理服务失败: {}", e))?;
+
+        tokio::spawn(async move {
+            println!("[singbox-desktop][MITM] 代理服务已启动，监听 127.0.0.1:{}", port);
+            if let Err(e) = proxy.start().await {
+                eprintln!("[singbox-desktop][MITM] 代理服务运行异常: {}", e);
+            }
+        });
+
+        if let Ok(mut s_guard) = state.mitm_shutdown.lock() {
+            *s_guard = Some(shutdown_tx);
         }
         if let Ok(mut p_guard) = state.mitm_port.lock() {
             *p_guard = Some(port);
         }
 
-        let msg = format!("MITM 后端服务已就绪，正在监听 127.0.0.1:{}", port);
-        let _ = app.emit("log-message", format!("[INFO][MITM] {}", msg));
+        let msg = format!("MITM 后端代理服务已就绪，正在监听 127.0.0.1:{}", port);
+        emit_log(&app, format!("[INFO][MITM] {}", msg));
 
         Ok(MitmStatus {
             enabled: true,
@@ -183,8 +286,10 @@ pub fn toggle_mitm_listener(
             message: msg,
         })
     } else {
-        if let Ok(mut l_guard) = state.mitm_listener.lock() {
-            *l_guard = None;
+        if let Ok(mut s_guard) = state.mitm_shutdown.lock() {
+            if let Some(tx) = s_guard.take() {
+                let _ = tx.send(());
+            }
         }
         if let Ok(mut p_guard) = state.mitm_port.lock() {
             *p_guard = None;
@@ -193,8 +298,8 @@ pub fn toggle_mitm_listener(
             *ctx_guard = None;
         }
 
-        let msg = "MITM 后端监听服务已停止，内存凭据已释放".to_string();
-        let _ = app.emit("log-message", format!("[INFO][MITM] {}", msg));
+        let msg = "MITM 后端代理服务已停止，端口已释放".to_string();
+        emit_log(&app, format!("[INFO][MITM] {}", msg));
 
         Ok(MitmStatus {
             enabled: false,
@@ -214,7 +319,7 @@ pub fn get_mitm_status(state: State<'_, AppState>) -> Result<MitmStatus, String>
     let is_macos = false;
 
     let port_opt = state.mitm_port.lock().ok().and_then(|p| *p);
-    let is_listening = state.mitm_listener.lock().ok().and_then(|l| l.as_ref().map(|_| true)).unwrap_or(false);
+    let is_listening = state.mitm_shutdown.lock().ok().and_then(|s| s.as_ref().map(|_| true)).unwrap_or(false);
 
     Ok(MitmStatus {
         enabled: is_listening,
@@ -228,7 +333,7 @@ pub fn get_mitm_status(state: State<'_, AppState>) -> Result<MitmStatus, String>
     })
 }
 
-/// 导入 CA 证书与真实 4 步合法性验证
+/// 导入 PEM 格式 CA 证书与私钥，执行 4 步合法性验证
 #[tauri::command]
 pub fn import_ca_cert(
     app: AppHandle,
@@ -237,44 +342,23 @@ pub fn import_ca_cert(
 ) -> Result<CertValidationResult, String> {
     let mut steps: Vec<ValidationStep> = Vec::new();
 
-    // 1. 真实解密提取
-    let (cert, pkey) = match payload.import_type.as_str() {
-        "p12" => {
-            let b64 = payload.p12_base64.as_deref().unwrap_or("").trim();
-            let pwd = payload.p12_password.as_deref().unwrap_or("");
-            let der = base64_decode(b64).map_err(|e| format!("Base64 解码失败: {}", e))?;
+    // 1. 纯明文 PEM 解析
+    let cert_str = payload.cert_pem.as_deref().unwrap_or("").trim();
+    let key_str = payload.key_pem.as_deref().unwrap_or("").trim();
 
-            let p12 = Pkcs12::from_der(&der).map_err(|e| format!("P12 结构损坏: {}", e))?;
-            let parsed = p12.parse2(pwd).map_err(|e| format!("P12 密码错误或解密失败: {}", e))?;
+    if cert_str.is_empty() || key_str.is_empty() {
+        return Err("证书或私钥内容不能为空".into());
+    }
 
-            let cert = parsed.cert.ok_or_else(|| "P12 中未包含公钥证书".to_string())?;
-            let pkey = parsed.pkey.ok_or_else(|| "P12 中未包含配套私钥".to_string())?;
+    let cert = X509::from_pem(cert_str.as_bytes()).map_err(|e| format!("PEM 证书解析失败: {}", e))?;
+    let pkey = PKey::private_key_from_pem(key_str.as_bytes()).map_err(|e| format!("PEM 私钥解析失败: {}", e))?;
 
-            steps.push(ValidationStep {
-                step_number: 1,
-                name: "P12 解密与解析".into(),
-                passed: true,
-                message: "成功通过密码解密 PKCS#12 并提取公私钥".into(),
-            });
-            (cert, pkey)
-        }
-        "pem" => {
-            let cert_str = payload.cert_pem.as_deref().unwrap_or("").trim();
-            let key_str = payload.key_pem.as_deref().unwrap_or("").trim();
-
-            let cert = X509::from_pem(cert_str.as_bytes()).map_err(|e| format!("PEM 证书解析失败: {}", e))?;
-            let pkey = PKey::private_key_from_pem(key_str.as_bytes()).map_err(|e| format!("PEM 私钥解析失败: {}", e))?;
-
-            steps.push(ValidationStep {
-                step_number: 1,
-                name: "PEM 解析".into(),
-                passed: true,
-                message: "成功解析 PEM 格式证书与私钥".into(),
-            });
-            (cert, pkey)
-        }
-        other => return Err(format!("不支持的导入格式: {}", other)),
-    };
+    steps.push(ValidationStep {
+        step_number: 1,
+        name: "PEM 解析".into(),
+        passed: true,
+        message: "成功解析 PEM 格式证书与私钥".into(),
+    });
 
     // 2. 真实有效期校验
     let not_before = cert.not_before().to_string();
@@ -466,6 +550,6 @@ pub fn delete_ca_cert(app: AppHandle, state: State<'_, AppState>) -> Result<(), 
         }
     }
 
-    let _ = app.emit("log-message", "[INFO][MITM] CA 证书、私钥以及内存镜像已安全删除".to_string());
+    emit_log(&app, "[INFO][MITM] CA 证书、私钥以及内存镜像已安全删除".to_string());
     Ok(())
 }

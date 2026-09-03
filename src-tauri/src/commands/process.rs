@@ -2,7 +2,7 @@ use std::process::Command;
 use tauri::{AppHandle, Emitter, Manager, State};
 use crate::paths::{resolve_binary, resolve_config};
 use crate::state::AppState;
-use crate::utils::clean_ansi;
+use crate::utils::{clean_ansi, emit_log};
 
 /// 检查给定 PID 的进程是否在系统中存活
 pub fn is_pid_alive(pid: u32) -> bool {
@@ -92,8 +92,8 @@ pub fn spawn_process_monitor(app: AppHandle, pid: u32, mode: &'static str) {
                         pid, mode
                     );
                     eprintln!("[singbox-desktop][UNEXPECTED_EXIT] {}", msg);
-                    let _ = app.emit(
-                        "log-message",
+                    emit_log(
+                        &app,
                         format!("[ERROR][UNEXPECTED_EXIT] {}", msg),
                     );
                     let _ = app.emit(
@@ -105,11 +105,7 @@ pub fn spawn_process_monitor(app: AppHandle, pid: u32, mode: &'static str) {
                         }),
                     );
                     // 唤醒并聚焦前台窗口，确保用户能立即看到 GUI 强提醒弹窗
-                    if let Some(window) = app.get_webview_window("main") {
-                        let _ = window.show();
-                        let _ = window.unminimize();
-                        let _ = window.set_focus();
-                    }
+                    crate::tray::show_or_create_main_window(&app);
                 }
                 break;
             }
@@ -146,7 +142,7 @@ pub async fn start_normal(
         Ok(p) => p,
         Err(e) => {
             eprintln!("[singbox-desktop][start_normal] 错误: {}", e);
-            let _ = app.emit("log-message", format!("[ERROR][start_normal] {}", e));
+            emit_log(&app, format!("[ERROR][start_normal] {}", e));
             return Err(e);
         }
     };
@@ -155,7 +151,7 @@ pub async fn start_normal(
         Ok(p) => p,
         Err(e) => {
             eprintln!("[singbox-desktop][start_normal] 错误: {}", e);
-            let _ = app.emit("log-message", format!("[ERROR][start_normal] {}", e));
+            emit_log(&app, format!("[ERROR][start_normal] {}", e));
             return Err(e);
         }
     };
@@ -165,8 +161,8 @@ pub async fn start_normal(
         resolved_binary.display(),
         resolved_config.display()
     );
-    let _ = app.emit(
-        "log-message",
+    emit_log(
+        &app,
         format!(
             "[INFO] 启动 sing-box: {} run -c {}",
             resolved_binary.display(),
@@ -195,14 +191,14 @@ pub async fn start_normal(
                 e
             );
             eprintln!("[singbox-desktop][start_normal] 错误: {}", err_msg);
-            let _ = app.emit("log-message", format!("[ERROR] {}", err_msg));
+            emit_log(&app, format!("[ERROR] {}", err_msg));
             return Err(err_msg);
         }
     };
 
     if let Some(pid) = child.id() {
         println!("[singbox-desktop][start_normal] 子进程拉起成功，PID: {}", pid);
-        let _ = app.emit("log-message", format!("[INFO] sing-box 运行中 (PID: {})", pid));
+        emit_log(&app, format!("[INFO] sing-box 运行中 (PID: {})", pid));
         if let Ok(mut pid_guard) = state.child_pid.lock() {
             *pid_guard = Some(pid);
         }
@@ -231,7 +227,7 @@ pub async fn start_normal(
             while let Ok(Some(line)) = reader.next_line().await {
                 let cleaned = clean_ansi(&line);
                 println!("[sing-box][stdout] {}", cleaned);
-                let _ = app_clone.emit("log-message", cleaned);
+                emit_log(&app_clone, cleaned);
             }
         });
     }
@@ -245,7 +241,7 @@ pub async fn start_normal(
             while let Ok(Some(line)) = reader.next_line().await {
                 let cleaned = clean_ansi(&line);
                 eprintln!("[sing-box][stderr] {}", cleaned);
-                let _ = app_clone.emit("log-message", cleaned);
+                emit_log(&app_clone, cleaned);
             }
         });
     }
@@ -282,12 +278,12 @@ pub async fn start_normal(
             Ok(status) => {
                 let msg = format!("[singbox-desktop] sing-box 进程已退出，状态: {}", status);
                 println!("{}", msg);
-                let _ = app_clone2.emit("log-message", &msg);
+                emit_log(&app_clone2, &msg);
             }
             Err(e) => {
                 let msg = format!("[singbox-desktop] 等待 sing-box 进程退出异常: {}", e);
                 eprintln!("{}", msg);
-                let _ = app_clone2.emit("log-message", &msg);
+                emit_log(&app_clone2, &msg);
             }
         }
 
@@ -303,8 +299,8 @@ pub async fn start_normal(
                 Err(e) => (None, format!("等待 sing-box 进程退出时发生异常: {}", e)),
             };
             eprintln!("[singbox-desktop][UNEXPECTED_EXIT] {}", detail);
-            let _ = app_clone2.emit(
-                "log-message",
+            emit_log(
+                &app_clone2,
                 format!("[ERROR][UNEXPECTED_EXIT] {}", detail),
             );
             let _ = app_clone2.emit(
@@ -315,11 +311,7 @@ pub async fn start_normal(
                     "mode": "normal"
                 }),
             );
-            if let Some(window) = app_clone2.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.unminimize();
-                let _ = window.set_focus();
-            }
+            crate::tray::show_or_create_main_window(&app_clone2);
         }
     });
 
@@ -343,7 +335,7 @@ pub fn start_admin(
         Ok(p) => p,
         Err(e) => {
             eprintln!("[singbox-desktop][start_admin] 错误: {}", e);
-            let _ = app.emit("log-message", format!("[ERROR][start_admin] {}", e));
+            emit_log(&app, format!("[ERROR][start_admin] {}", e));
             return Err(e);
         }
     };
@@ -352,7 +344,7 @@ pub fn start_admin(
         Ok(p) => p,
         Err(e) => {
             eprintln!("[singbox-desktop][start_admin] 错误: {}", e);
-            let _ = app.emit("log-message", format!("[ERROR][start_admin] {}", e));
+            emit_log(&app, format!("[ERROR][start_admin] {}", e));
             return Err(e);
         }
     };
@@ -364,8 +356,8 @@ pub fn start_admin(
         "[singbox-desktop][start_admin] 准备提权拉起: {} run -c {}",
         bin_str, cfg_str
     );
-    let _ = app.emit(
-        "log-message",
+    emit_log(
+        &app,
         format!("[INFO] 正在申请管理员权限拉起: {} run -c {}", bin_str, cfg_str),
     );
 
@@ -382,7 +374,7 @@ pub fn start_admin(
             .map_err(|e| {
                 let err_msg = format!("执行 osascript 失败: {}", e);
                 eprintln!("[singbox-desktop][start_admin] 错误: {}", err_msg);
-                let _ = app.emit("log-message", format!("[ERROR] {}", err_msg));
+                emit_log(&app, format!("[ERROR] {}", err_msg));
                 err_msg
             })?;
 
@@ -424,13 +416,13 @@ pub fn start_admin(
                 "macOS 管理员权限启动成功".to_string()
             };
             println!("[singbox-desktop][start_admin] 成功: {}", msg);
-            let _ = app.emit("log-message", format!("[SUCCESS] {}", msg));
+            emit_log(&app, format!("[SUCCESS] {}", msg));
             Ok(msg)
         } else {
             let err = String::from_utf8_lossy(&output.stderr).to_string();
             let msg = format!("授权失败或用户取消: {}", err.trim());
             eprintln!("[singbox-desktop][start_admin] 错误: {}", msg);
-            let _ = app.emit("log-message", format!("[ERROR] {}", msg));
+            emit_log(&app, format!("[ERROR] {}", msg));
             Err(msg)
         }
     }
@@ -448,7 +440,7 @@ pub fn start_admin(
             .map_err(|e| {
                 let err_msg = format!("启动 PowerShell 提权失败: {}", e);
                 eprintln!("[singbox-desktop][start_admin] 错误: {}", err_msg);
-                let _ = app.emit("log-message", format!("[ERROR] {}", err_msg));
+                emit_log(&app, format!("[ERROR] {}", err_msg));
                 err_msg
             })?;
 
@@ -490,13 +482,13 @@ pub fn start_admin(
                 "Windows UAC 提权启动成功".to_string()
             };
             println!("[singbox-desktop][start_admin] 成功: {}", msg);
-            let _ = app.emit("log-message", format!("[SUCCESS] {}", msg));
+            emit_log(&app, format!("[SUCCESS] {}", msg));
             Ok(msg)
         } else {
             let err = String::from_utf8_lossy(&output.stderr).to_string();
             let msg = format!("提权启动被拒绝或用户取消: {}", err.trim());
             eprintln!("[singbox-desktop][start_admin] 错误: {}", msg);
-            let _ = app.emit("log-message", format!("[ERROR] {}", msg));
+            emit_log(&app, format!("[ERROR] {}", msg));
             Err(msg)
         }
     }
@@ -505,7 +497,7 @@ pub fn start_admin(
     {
         let msg = "当前操作系统暂不支持提权启动，仅支持 macOS 与 Windows".to_string();
         eprintln!("[singbox-desktop][start_admin] 错误: {}", msg);
-        let _ = app.emit("log-message", format!("[ERROR] {}", msg));
+        emit_log(&app, format!("[ERROR] {}", msg));
         Err(msg)
     }
 }
@@ -594,7 +586,7 @@ pub fn do_stop_process(app: &AppHandle, state: &AppState) -> Result<String, Stri
     crate::tray::update_tray_menu_state(app, "stopped", &p, &t);
 
     println!("[singbox-desktop][stop_process] {}", msg);
-    let _ = app.emit("log-message", format!("[INFO] {}", msg));
+    emit_log(app, format!("[INFO] {}", msg));
     let _ = app.emit("process-stopped", ());
     Ok(msg)
 }
@@ -647,5 +639,52 @@ pub fn update_tray_info(
         .unwrap_or_else(|_| "Mixed".to_string());
 
     crate::tray::update_tray_menu_state(&app, &m, &p, &t);
+    Ok(())
+}
+
+#[derive(serde::Serialize, Clone, Debug)]
+pub struct ProcessStatus {
+    pub running: bool,
+    pub mode: String, // "normal" | "admin" | "stopped"
+    pub pid: Option<u32>,
+}
+
+/// 查询当前 sing-box 进程运行状态 (供窗口重建初始化使用)
+#[tauri::command]
+pub fn get_process_status(state: State<'_, AppState>) -> Result<ProcessStatus, String> {
+    let mut child_guard = state.child_pid.lock().map_err(|e| e.to_string())?;
+    let is_admin = *state.is_admin.lock().map_err(|e| e.to_string())?;
+
+    if let Some(pid) = *child_guard {
+        if is_pid_alive(pid) {
+            return Ok(ProcessStatus {
+                running: true,
+                mode: if is_admin { "admin".into() } else { "normal".into() },
+                pid: Some(pid),
+            });
+        } else {
+            *child_guard = None;
+        }
+    }
+
+    Ok(ProcessStatus {
+        running: false,
+        mode: "stopped".into(),
+        pid: None,
+    })
+}
+
+/// 获取后端常驻的 20MB 内存日志历史 (供主窗口重新唤醒时恢复)
+#[tauri::command]
+pub fn get_memory_logs(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    let buf = state.log_buffer.lock().map_err(|e| e.to_string())?;
+    Ok(buf.get_all())
+}
+
+/// 清空后端 20MB 内存日志缓冲区
+#[tauri::command]
+pub fn clear_memory_logs(state: State<'_, AppState>) -> Result<(), String> {
+    let mut buf = state.log_buffer.lock().map_err(|e| e.to_string())?;
+    buf.clear();
     Ok(())
 }

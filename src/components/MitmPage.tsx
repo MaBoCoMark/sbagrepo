@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Heading, Text, Button, Banner, Label, TextInput } from '@primer/react';
+import { Heading, Text, Button, Banner, Label } from '@primer/react';
 import {
   KeyIcon,
   ShieldCheckIcon,
@@ -9,11 +9,11 @@ import {
   XCircleIcon,
   TrashIcon,
   SyncIcon,
-  LockIcon,
   ShieldIcon,
+  LockIcon,
 } from '@primer/octicons-react';
 import { invoke } from '@tauri-apps/api/core';
-import { CertValidationResult, MitmStatus, ValidationStep } from '../types/mitm';
+import { CertValidationResult, MitmStatus, ValidationStep, ImportCertPayload } from '../types/mitm';
 
 interface MitmPageProps {
   singboxPort: number | string;
@@ -41,10 +41,7 @@ export const MitmPage: React.FC<MitmPageProps> = ({ singboxPort }) => {
     message: string;
   } | null>(null);
 
-  // 证书导入表单状态
-  const [importType, setImportType] = useState<'p12' | 'pem'>('p12');
-  const [p12Base64, setP12Base64] = useState<string>('');
-  const [p12Password, setP12Password] = useState<string>('');
+  // 纯明文 PEM 证书导入表单状态
   const [certPem, setCertPem] = useState<string>('');
   const [keyPem, setKeyPem] = useState<string>('');
   const [storeInKeychain, setStoreInKeychain] = useState<boolean>(true);
@@ -52,7 +49,6 @@ export const MitmPage: React.FC<MitmPageProps> = ({ singboxPort }) => {
   const [validationSteps, setValidationSteps] = useState<ValidationStep[]>([]);
 
   // 文件上传 Ref
-  const p12FileInputRef = useRef<HTMLInputElement | null>(null);
   const certFileInputRef = useRef<HTMLInputElement | null>(null);
   const keyFileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -112,7 +108,7 @@ export const MitmPage: React.FC<MitmPageProps> = ({ singboxPort }) => {
     }
   };
 
-  // 开启/关闭 MITM 待命监听服务
+  // 开启/关闭 MITM 代理监听服务 (集成了 Hudsucker + rcgen Hello World 拦截器)
   const handleToggleMitm = async () => {
     setIsTogglingMitm(true);
     const targetEnable = !mitmStatus.enabled;
@@ -126,10 +122,10 @@ export const MitmPage: React.FC<MitmPageProps> = ({ singboxPort }) => {
       setMitmStatus(res);
       setCertFeedback({
         type: targetEnable ? 'success' : 'info',
-        title: targetEnable ? 'MITM 待命监听已激活' : 'MITM 监听已关闭',
+        title: targetEnable ? 'MITM 拦截代理已激活' : 'MITM 代理已关闭',
         message: targetEnable
-          ? `Rust 后端已成功在 0.0.0.0:${targetPort} 绑定待命端口。未来 sing-box 命中拦截策略将无缝指向此端口。`
-          : 'MITM 后端监听套接字已安全释放。',
+          ? `Rust 后端 (Hudsucker + rcgen) 已成功在 127.0.0.1:${targetPort} 启动代理拦截。所有截获请求将自动注入随机数响应头 x-tauri-mitm-message 并替换 body。`
+          : 'MITM 代理后端已安全停止，端口与套接字已释放。',
       });
     } catch (err: any) {
       setCertFeedback({
@@ -140,21 +136,6 @@ export const MitmPage: React.FC<MitmPageProps> = ({ singboxPort }) => {
     } finally {
       setIsTogglingMitm(false);
     }
-  };
-
-  // 处理 P12 文件选择并转 Base64
-  const handleP12FileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = reader.result as string;
-      const commaIdx = result.indexOf(',');
-      const b64 = commaIdx >= 0 ? result.slice(commaIdx + 1) : result;
-      setP12Base64(b64);
-    };
-    reader.readAsDataURL(file);
   };
 
   // 处理证书 PEM 文件读取
@@ -181,19 +162,16 @@ export const MitmPage: React.FC<MitmPageProps> = ({ singboxPort }) => {
     reader.readAsText(file);
   };
 
-  // 提交 CA 证书验证与导入流水线
+  // 提交 CA 证书验证与导入流水线 (PEM 格式明文导入)
   const handleImportCert = async () => {
     setIsValidating(true);
     setValidationSteps([]);
     setCertFeedback(null);
 
     try {
-      const payload = {
-        import_type: importType,
-        p12_base64: importType === 'p12' ? p12Base64 : undefined,
-        p12_password: importType === 'p12' ? p12Password : undefined,
-        cert_pem: importType === 'pem' ? certPem : undefined,
-        key_pem: importType === 'pem' ? keyPem : undefined,
+      const payload: ImportCertPayload = {
+        cert_pem: certPem,
+        key_pem: keyPem,
         store_in_keychain: storeInKeychain,
       };
 
@@ -282,14 +260,14 @@ export const MitmPage: React.FC<MitmPageProps> = ({ singboxPort }) => {
               )}
             </div>
             <Text as="p" style={{ fontSize: '12px', color: 'var(--fg-muted, #656d76)', margin: '4px 0 0 0' }}>
-              为将来的动态 HTTPS 证书签发与特定域名规则分流 (如 domain keyword: weibo.com) 提供待命端口与 CA 根证书底座。
+              集成 Hudsucker + rcgen 架构。支持明文 PEM 导入、动态证书签发与 Hello World 拦截注入。
             </Text>
           </div>
         </div>
 
         <div>
           <Label variant={mitmStatus.enabled ? 'success' : 'default'} size="large">
-            {mitmStatus.enabled ? `● 待命监听中 (:${currentTargetPort})` : '○ MITM 服务未启动'}
+            {mitmStatus.enabled ? `● 代理拦截中 (:${currentTargetPort})` : '○ MITM 服务未启动'}
           </Label>
         </div>
       </div>
@@ -323,7 +301,7 @@ export const MitmPage: React.FC<MitmPageProps> = ({ singboxPort }) => {
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <ServerIcon size={18} fill="var(--fg-muted, #656d76)" />
             <Heading as="h3" style={{ fontSize: '15px', fontWeight: 600, margin: 0 }}>
-              MITM 独立监听端口待命服务 (Port Sniffing & Listener)
+              MITM 独立监听端口待命服务 (Hudsucker Proxy Interceptor)
             </Heading>
           </div>
 
@@ -345,7 +323,7 @@ export const MitmPage: React.FC<MitmPageProps> = ({ singboxPort }) => {
               onClick={handleToggleMitm}
               loading={isTogglingMitm}
             >
-              {mitmStatus.enabled ? '停止待命监听' : '开启待命监听'}
+              {mitmStatus.enabled ? '停止代理监听' : '开启代理监听'}
             </Button>
           </div>
         </div>
@@ -420,18 +398,19 @@ export const MitmPage: React.FC<MitmPageProps> = ({ singboxPort }) => {
               {currentTargetPort}
             </div>
             <div style={{ fontSize: '11px', color: 'var(--fg-muted, #656d76)', marginTop: '4px' }}>
-              {mitmStatus.enabled ? '● 正在监听 0.0.0.0' : '就绪待绑定'}
+              {mitmStatus.enabled ? '● 正在监听 127.0.0.1' : '就绪待绑定'}
             </div>
           </div>
         </div>
 
         <Text as="p" style={{ fontSize: '12px', color: 'var(--fg-muted, #656d76)', margin: 0, lineHeight: 1.6 }}>
-          端口分配机制说明：Rust 后端自动优先尝试 <code>sing-box 端口 + 1</code>。若被其他软件占用，则依次递增加 2、加 3
-          直至 65535。一旦开启开关，Rust 后端将在该端口保持 <code>TcpListener</code> 处于守候状态。
+          端口与拦截机制：Rust 后端基于 <strong>Hudsucker</strong> 与 <strong>rcgen</strong> 运行。开启后，任何 HTTP/HTTPS 请求均被捕获，
+          并在响应头中注入 <code>x-tauri-mitm-message: edited+随机数</code>，Body 替换为 <code>&lt;h1&gt;Hi from Tarui MitM + 随机数&lt;/h1&gt;</code>，
+          随机数即时同步打印并输出至内存日志看板中。
         </Text>
       </div>
 
-      {/* 模块 2: CA 根证书管理与 4 步安全性校验流水线 */}
+      {/* 模块 2: CA 根证书管理 (仅支持 PEM 明文导入) */}
       <div
         style={{
           padding: '20px',
@@ -447,7 +426,7 @@ export const MitmPage: React.FC<MitmPageProps> = ({ singboxPort }) => {
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <ShieldCheckIcon size={18} fill="var(--fg-muted, #656d76)" />
             <Heading as="h3" style={{ fontSize: '15px', fontWeight: 600, margin: 0 }}>
-              CA 根证书管理 (CA Certificate Management)
+              CA 根证书管理 (CA Certificate Management - PEM 明文导入)
             </Heading>
           </div>
 
@@ -467,8 +446,8 @@ export const MitmPage: React.FC<MitmPageProps> = ({ singboxPort }) => {
         {/* 使用门槛声明 */}
         <Banner
           variant="info"
-          title="CA 根证书使用门槛说明"
-          description="本软件为保证纯净安全，不集成证书自动生成代码。用户必须自行提供已有根证书（如使用 OpenSSL 或 mkcert 预先生成）。支持导入 P12 (Base64 + 解密密钥) 或明文 PEM 格式。"
+          title="CA 根证书导入说明"
+          description="系统仅支持 PEM 明文格式证书与私钥导入。请上传或直接粘贴带有 -----BEGIN CERTIFICATE----- 与 -----BEGIN PRIVATE KEY----- 的 PEM 格式文本。"
         />
 
         {/* 若已导入证书，展示详细卡片 */}
@@ -542,7 +521,7 @@ export const MitmPage: React.FC<MitmPageProps> = ({ singboxPort }) => {
           </div>
         ) : null}
 
-        {/* 证书导入表单 */}
+        {/* 证书导入表单 (纯 PEM 明文) */}
         <div
           style={{
             display: 'flex',
@@ -556,36 +535,11 @@ export const MitmPage: React.FC<MitmPageProps> = ({ singboxPort }) => {
         >
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
             <Text style={{ fontSize: '13px', fontWeight: 600 }}>
-              {existingCert ? '重新导入或替换 CA 根证书' : '导入 CA 根证书'}
+              {existingCert ? '重新导入或替换 CA 根证书 (PEM 明文)' : '导入 CA 根证书 (PEM 明文)'}
             </Text>
-
-            {/* 格式切换开关 */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <Button
-                variant={importType === 'p12' ? 'primary' : 'default'}
-                size="small"
-                onClick={() => setImportType('p12')}
-              >
-                P12 (Base64 + 密钥)
-              </Button>
-              <Button
-                variant={importType === 'pem' ? 'primary' : 'default'}
-                size="small"
-                onClick={() => setImportType('pem')}
-              >
-                PEM 明文
-              </Button>
-            </div>
           </div>
 
-          {/* 隐藏的上传选择器 */}
-          <input
-            type="file"
-            ref={p12FileInputRef}
-            onChange={handleP12FileUpload}
-            style={{ display: 'none' }}
-            accept=".p12,.pfx"
-          />
+          {/* 隐藏的文件上传 input */}
           <input
             type="file"
             ref={certFileInputRef}
@@ -601,124 +555,73 @@ export const MitmPage: React.FC<MitmPageProps> = ({ singboxPort }) => {
             accept=".key,.pem"
           />
 
-          {importType === 'p12' ? (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-              <div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
-                  <label style={{ fontSize: '12px', fontWeight: 600, color: 'var(--fg-muted, #656d76)' }}>
-                    P12 Base64 编码数据 (可直接粘贴或上传 .p12 文件)
-                  </label>
-                  <Button
-                    variant="invisible"
-                    size="small"
-                    leadingVisual={UploadIcon}
-                    onClick={() => p12FileInputRef.current?.click()}
-                    style={{ fontSize: '11px', height: '20px', padding: '0 4px' }}
-                  >
-                    从 .p12/.pfx 文件载入
-                  </Button>
-                </div>
-                <textarea
-                  value={p12Base64}
-                  onChange={(e: any) => setP12Base64(e.target.value)}
-                  placeholder="例如: MIIKuQIBAzCCCn8GCSqg6AgIIAA..."
-                  rows={3}
-                  style={{
-                    width: '100%',
-                    fontFamily: 'monospace',
-                    fontSize: '12px',
-                    padding: '8px',
-                    borderRadius: '4px',
-                    border: '1px solid var(--border-default, #d0d7de)',
-                    outline: 'none',
-                    boxSizing: 'border-box',
-                  }}
-                />
-              </div>
-
-              <div>
-                <label style={{ fontSize: '12px', fontWeight: 600, color: 'var(--fg-muted, #656d76)', display: 'block', marginBottom: '4px' }}>
-                  P12 解密密码 (Decryption Password)
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+            <div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                <label style={{ fontSize: '12px', fontWeight: 600, color: 'var(--fg-muted, #656d76)' }}>
+                  公钥证书 PEM (包含 -----BEGIN CERTIFICATE-----)
                 </label>
-                <TextInput
-                  type="password"
-                  leadingVisual={LockIcon}
-                  value={p12Password}
-                  onChange={(e: any) => setP12Password(e.target.value)}
-                  placeholder="若未设置密码可留空"
-                  block
-                />
+                <Button
+                  variant="invisible"
+                  size="small"
+                  leadingVisual={UploadIcon}
+                  onClick={() => certFileInputRef.current?.click()}
+                  style={{ fontSize: '11px', height: '20px', padding: '0 4px' }}
+                >
+                  上传 .crt/.pem
+                </Button>
               </div>
+              <textarea
+                value={certPem}
+                onChange={(e: any) => setCertPem(e.target.value)}
+                placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----"
+                rows={6}
+                style={{
+                  width: '100%',
+                  fontFamily: 'monospace',
+                  fontSize: '11px',
+                  padding: '8px',
+                  borderRadius: '4px',
+                  border: '1px solid var(--border-default, #d0d7de)',
+                  outline: 'none',
+                  boxSizing: 'border-box',
+                }}
+              />
             </div>
-          ) : (
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
-              <div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
-                  <label style={{ fontSize: '12px', fontWeight: 600, color: 'var(--fg-muted, #656d76)' }}>
-                    公钥证书 PEM (包含 -----BEGIN CERTIFICATE-----)
-                  </label>
-                  <Button
-                    variant="invisible"
-                    size="small"
-                    leadingVisual={UploadIcon}
-                    onClick={() => certFileInputRef.current?.click()}
-                    style={{ fontSize: '11px', height: '20px', padding: '0 4px' }}
-                  >
-                    上传 .crt/.pem
-                  </Button>
-                </div>
-                <textarea
-                  value={certPem}
-                  onChange={(e: any) => setCertPem(e.target.value)}
-                  placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----"
-                  rows={5}
-                  style={{
-                    width: '100%',
-                    fontFamily: 'monospace',
-                    fontSize: '11px',
-                    padding: '8px',
-                    borderRadius: '4px',
-                    border: '1px solid var(--border-default, #d0d7de)',
-                    outline: 'none',
-                    boxSizing: 'border-box',
-                  }}
-                />
-              </div>
 
-              <div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
-                  <label style={{ fontSize: '12px', fontWeight: 600, color: 'var(--fg-muted, #656d76)' }}>
-                    私钥 PEM (包含 -----BEGIN PRIVATE KEY-----)
-                  </label>
-                  <Button
-                    variant="invisible"
-                    size="small"
-                    leadingVisual={UploadIcon}
-                    onClick={() => keyFileInputRef.current?.click()}
-                    style={{ fontSize: '11px', height: '20px', padding: '0 4px' }}
-                  >
-                    上传 .key/.pem
-                  </Button>
-                </div>
-                <textarea
-                  value={keyPem}
-                  onChange={(e: any) => setKeyPem(e.target.value)}
-                  placeholder="-----BEGIN PRIVATE KEY-----&#10;...&#10;-----END PRIVATE KEY-----"
-                  rows={5}
-                  style={{
-                    width: '100%',
-                    fontFamily: 'monospace',
-                    fontSize: '11px',
-                    padding: '8px',
-                    borderRadius: '4px',
-                    border: '1px solid var(--border-default, #d0d7de)',
-                    outline: 'none',
-                    boxSizing: 'border-box',
-                  }}
-                />
+            <div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                <label style={{ fontSize: '12px', fontWeight: 600, color: 'var(--fg-muted, #656d76)' }}>
+                  私钥 PEM (包含 -----BEGIN PRIVATE KEY-----)
+                </label>
+                <Button
+                  variant="invisible"
+                  size="small"
+                  leadingVisual={UploadIcon}
+                  onClick={() => keyFileInputRef.current?.click()}
+                  style={{ fontSize: '11px', height: '20px', padding: '0 4px' }}
+                >
+                  上传 .key/.pem
+                </Button>
               </div>
+              <textarea
+                value={keyPem}
+                onChange={(e: any) => setKeyPem(e.target.value)}
+                placeholder="-----BEGIN PRIVATE KEY-----&#10;...&#10;-----END PRIVATE KEY-----"
+                rows={6}
+                style={{
+                  width: '100%',
+                  fontFamily: 'monospace',
+                  fontSize: '11px',
+                  padding: '8px',
+                  borderRadius: '4px',
+                  border: '1px solid var(--border-default, #d0d7de)',
+                  outline: 'none',
+                  boxSizing: 'border-box',
+                }}
+              />
             </div>
-          )}
+          </div>
 
           {/* 私钥存储策略偏好设置 */}
           <div
@@ -800,7 +703,7 @@ export const MitmPage: React.FC<MitmPageProps> = ({ singboxPort }) => {
               leadingVisual={ShieldCheckIcon}
               onClick={handleImportCert}
               loading={isValidating}
-              disabled={isValidating || (importType === 'p12' ? !p12Base64.trim() : !certPem.trim() || !keyPem.trim())}
+              disabled={isValidating || !certPem.trim() || !keyPem.trim()}
             >
               执行 4 步校验并导入 CA 证书
             </Button>
