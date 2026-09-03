@@ -1,5 +1,13 @@
 use std::net::TcpListener;
 use std::sync::Mutex;
+use openssl::pkey::{PKey, Private};
+use openssl::x509::X509;
+
+/// 内存中常驻的 MITM 根证书与私钥凭据（供代理运行时纯内存签发，避免磁盘与钥匙串 I/O）
+pub struct MitmContext {
+    pub ca_cert: X509,
+    pub ca_key: PKey<Private>,
+}
 
 /// 应用全局共享状态
 pub struct AppState {
@@ -13,6 +21,8 @@ pub struct AppState {
     pub mitm_listener: Mutex<Option<TcpListener>>,
     /// MITM 抓包本地监听端口
     pub mitm_port: Mutex<Option<u16>>,
+    /// 存放解密加载到内存中的根证书与私钥，服务未启动或未导入时为 None
+    pub mitm_ctx: Mutex<Option<MitmContext>>,
     /// 托盘当前显示的运行模式 ("stopped", "normal", "admin")
     pub tray_mode: Mutex<String>,
     /// 托盘当前显示的监听端口 (例如 "2080")

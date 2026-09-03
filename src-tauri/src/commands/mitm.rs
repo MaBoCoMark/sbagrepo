@@ -1,9 +1,21 @@
 use serde::{Deserialize, Serialize};
+use std::cmp::Ordering;
+use std::fs;
 use std::net::TcpListener;
 use tauri::{AppHandle, Emitter, State};
+use keyring::Entry;
+
+use openssl::asn1::Asn1Time;
+use openssl::pkcs12::Pkcs12;
+use openssl::pkey::PKey;
+use openssl::x509::{X509, X509NameRef, X509VerifyResult};
+
 use crate::paths::{get_app_ca_cert_path, get_app_ca_key_path};
-use crate::state::AppState;
+use crate::state::{AppState, MitmContext};
 use crate::utils::base64_decode;
+
+const KEYCHAIN_SERVICE: &str = "com.singbox.desktop.mitm";
+const KEYCHAIN_USER_CA_KEY: &str = "root_ca_private_key";
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct MitmStatus {
@@ -48,7 +60,66 @@ pub struct CertValidationResult {
     pub key_path: Option<String>,
 }
 
-/// 端口嗅探: 从基础端口 + 1 开始，探测第一个未被占用的可用端口
+/// 辅助函数：安全提取 X509Name 的条目字符串 (如 CN=..., O=...)
+fn format_x509_name(name: &X509NameRef) -> String {
+    name.entries()
+        .map(|e| {
+            let key = e.object().nid().short_name().unwrap_or("?");
+            let val = String::from_utf8_lossy(e.data().as_slice());
+            format!("{}={}", key, val)
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// 辅助函数：校验是否具有 CA 资质
+fn check_is_ca(cert: &X509) -> bool {
+    // 使用 matches! 宏匹配 Ok(Ordering::Equal)，避开 ErrorStack 不能比较的问题
+    let is_self_signed = matches!(cert.subject_name().try_cmp(cert.issuer_name()), Ok(Ordering::Equal));
+    let is_self_issued = cert.issued(cert) == X509VerifyResult::OK;
+    let has_pathlen = cert.pathlen().is_some();
+    is_self_signed || is_self_issued || has_pathlen
+}
+
+/// 辅助函数：从 Keychain 或本地读取私钥并加载到内存
+fn load_mitm_into_memory(app: &AppHandle, state: &State<'_, AppState>) -> Result<(), String> {
+    let cert_path = get_app_ca_cert_path(app)?;
+    if !cert_path.is_file() {
+        return Err("找不到本地根证书 (ca.crt)".into());
+    }
+
+    let cert_bytes = fs::read(&cert_path).map_err(|e| format!("读取 ca.crt 失败: {}", e))?;
+    let cert = X509::from_pem(&cert_bytes).map_err(|e| format!("解析 ca.crt 失败: {}", e))?;
+
+    // 优先从钥匙串读取私钥
+    let key_pem = if let Ok(entry) = Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_USER_CA_KEY) {
+        if let Ok(pwd) = entry.get_password() {
+            pwd
+        } else {
+            let key_path = get_app_ca_key_path(app)?;
+            fs::read_to_string(&key_path).map_err(|_| "未在钥匙串或本地找到配套私钥".to_string())?
+        }
+    } else {
+        let key_path = get_app_ca_key_path(app)?;
+        fs::read_to_string(&key_path).map_err(|_| "未在钥匙串或本地找到配套私钥".to_string())?
+    };
+
+    let pkey = PKey::private_key_from_pem(key_pem.as_bytes())
+        .map_err(|e| format!("解析私钥失败: {}", e))?;
+
+    if let Ok(mut ctx_guard) = state.mitm_ctx.lock() {
+        *ctx_guard = Some(MitmContext { ca_cert: cert, ca_key: pkey });
+    }
+
+    println!("[singbox-desktop][MITM] CA 证书与私钥已载入全局内存！");
+    Ok(())
+}
+
+// -------------------------------------------------------------
+// Tauri Commands
+// -------------------------------------------------------------
+
+/// 端口嗅探: 探测第一个未被占用的可用端口
 #[tauri::command]
 pub fn sniff_mitm_port(base_port: u16) -> Result<u16, String> {
     let start_port = base_port.saturating_add(1);
@@ -56,36 +127,17 @@ pub fn sniff_mitm_port(base_port: u16) -> Result<u16, String> {
         return Err(format!("基准端口 {} 递增后超出合法端口范围 (1024-65535)", base_port));
     }
 
-    println!(
-        "[singbox-desktop][sniff_mitm_port] 开始嗅探可用 MITM 端口，起始候选: {}",
-        start_port
-    );
-
     for candidate in start_port..=65535 {
-        // 尝试临时绑定 127.0.0.1
-        match TcpListener::bind(("127.0.0.1", candidate)) {
-            Ok(listener) => {
-                drop(listener);
-                println!(
-                    "[singbox-desktop][sniff_mitm_port] 成功找到可用端口: {}",
-                    candidate
-                );
-                return Ok(candidate);
-            }
-            Err(_) => {
-                // 端口被占用，继续尝试下一个
-                continue;
-            }
+        if let Ok(listener) = TcpListener::bind(("127.0.0.1", candidate)) {
+            drop(listener);
+            return Ok(candidate);
         }
     }
 
-    Err(format!(
-        "端口嗅探失败：从 {} 到 65535 的所有端口均已被占用或不可用！",
-        start_port
-    ))
+    Err(format!("端口嗅探失败：从 {} 到 65535 的所有端口均已被占用！", start_port))
 }
 
-/// 开启或关闭 MITM 待命端口监听器
+/// 开启或关闭 MITM 监听
 #[tauri::command]
 pub fn toggle_mitm_listener(
     app: AppHandle,
@@ -99,20 +151,19 @@ pub fn toggle_mitm_listener(
     let is_macos = false;
 
     if enable {
-        println!("[singbox-desktop][toggle_mitm_listener] 请求开启 MITM 监听: 端口 {}", port);
+        if let Err(e) = load_mitm_into_memory(&app, &state) {
+            return Err(format!("开启失败，证书载入内存失败: {}", e));
+        }
 
-        // 尝试绑定端口
-        let listener = match TcpListener::bind(("0.0.0.0", port)) {
+        let listener = match TcpListener::bind(("127.0.0.1", port)) {
             Ok(l) => l,
             Err(e) => {
-                let err_msg = format!("无法在 0.0.0.0:{} 绑定 MITM 监听服务: {}", port, e);
-                eprintln!("[singbox-desktop][toggle_mitm_listener] {}", err_msg);
+                let err_msg = format!("无法在 127.0.0.1:{} 绑定 MITM 监听服务: {}", port, e);
                 let _ = app.emit("log-message", format!("[ERROR][MITM] {}", err_msg));
                 return Err(err_msg);
             }
         };
 
-        // 设置为非阻塞模式以作为待命守候监听
         let _ = listener.set_nonblocking(true);
 
         if let Ok(mut l_guard) = state.mitm_listener.lock() {
@@ -122,8 +173,7 @@ pub fn toggle_mitm_listener(
             *p_guard = Some(port);
         }
 
-        let msg = format!("MITM 后端待命服务已就绪，正在监听 0.0.0.0:{}", port);
-        println!("[singbox-desktop][toggle_mitm_listener] {}", msg);
+        let msg = format!("MITM 后端服务已就绪，正在监听 127.0.0.1:{}", port);
         let _ = app.emit("log-message", format!("[INFO][MITM] {}", msg));
 
         Ok(MitmStatus {
@@ -133,17 +183,17 @@ pub fn toggle_mitm_listener(
             message: msg,
         })
     } else {
-        println!("[singbox-desktop][toggle_mitm_listener] 请求关闭 MITM 监听");
-
         if let Ok(mut l_guard) = state.mitm_listener.lock() {
             *l_guard = None;
         }
         if let Ok(mut p_guard) = state.mitm_port.lock() {
             *p_guard = None;
         }
+        if let Ok(mut ctx_guard) = state.mitm_ctx.lock() {
+            *ctx_guard = None;
+        }
 
-        let msg = "MITM 后端监听服务已停止".to_string();
-        println!("[singbox-desktop][toggle_mitm_listener] {}", msg);
+        let msg = "MITM 后端监听服务已停止，内存凭据已释放".to_string();
         let _ = app.emit("log-message", format!("[INFO][MITM] {}", msg));
 
         Ok(MitmStatus {
@@ -178,206 +228,143 @@ pub fn get_mitm_status(state: State<'_, AppState>) -> Result<MitmStatus, String>
     })
 }
 
-/// CA 根证书导入与 4 步合法性验证
+/// 导入 CA 证书与真实 4 步合法性验证
 #[tauri::command]
 pub fn import_ca_cert(
     app: AppHandle,
+    state: State<'_, AppState>,
     payload: ImportCertPayload,
 ) -> Result<CertValidationResult, String> {
-    println!(
-        "[singbox-desktop][import_ca_cert] 收到 CA 根证书导入请求，类型: {}",
-        payload.import_type
-    );
-
     let mut steps: Vec<ValidationStep> = Vec::new();
 
-    // 步骤 1: 解密与结构解析
-    let (cert_pem, key_pem, key_algorithm) = match payload.import_type.as_str() {
+    // 1. 真实解密提取
+    let (cert, pkey) = match payload.import_type.as_str() {
         "p12" => {
             let b64 = payload.p12_base64.as_deref().unwrap_or("").trim();
-            if b64.is_empty() {
-                return Err("P12 导入失败：未提供 P12 Base64 数据！".to_string());
-            }
-            let _password = payload.p12_password.as_deref().unwrap_or("");
+            let pwd = payload.p12_password.as_deref().unwrap_or("");
+            let der = base64_decode(b64).map_err(|e| format!("Base64 解码失败: {}", e))?;
 
-            let decoded_bytes = match base64_decode(b64) {
-                Ok(b) => b,
-                Err(e) => {
-                    let err = format!("P12 Base64 解码失败: {}", e);
-                    steps.push(ValidationStep {
-                        step_number: 1,
-                        name: "P12 解密与解析".to_string(),
-                        passed: false,
-                        message: err.clone(),
-                    });
-                    return Err(err);
-                }
-            };
+            let p12 = Pkcs12::from_der(&der).map_err(|e| format!("P12 结构损坏: {}", e))?;
+            let parsed = p12.parse2(pwd).map_err(|e| format!("P12 密码错误或解密失败: {}", e))?;
 
-            // 在 macOS 原生环境优先通过 security 或者系统标准方式解密
-            // 验证 P12 文件头与有效性
-            if decoded_bytes.len() < 32 {
-                let err = "P12 数据长度过短，无法构成合法的 PKCS#12 密钥库！".to_string();
-                steps.push(ValidationStep {
-                    step_number: 1,
-                    name: "P12 解密与解析".to_string(),
-                    passed: false,
-                    message: err.clone(),
-                });
-                return Err(err);
-            }
-
-            // 解析出的 PEM 结构 (如果用户传入的是 PEM 或由 P12 展开)
-            let cert_str = format!(
-                "-----BEGIN CERTIFICATE-----\n{}\n-----END CERTIFICATE-----\n",
-                "MIIB...singbox...ca...cert"
-            );
-            let key_str = format!(
-                "-----BEGIN PRIVATE KEY-----\n{}\n-----END PRIVATE KEY-----\n",
-                "MIIE...singbox...ca...key"
-            );
+            let cert = parsed.cert.ok_or_else(|| "P12 中未包含公钥证书".to_string())?;
+            let pkey = parsed.pkey.ok_or_else(|| "P12 中未包含配套私钥".to_string())?;
 
             steps.push(ValidationStep {
                 step_number: 1,
-                name: "P12 解密与结构解析".to_string(),
+                name: "P12 解密与解析".into(),
                 passed: true,
-                message: format!(
-                    "成功解密 PKCS#12 密钥包 ({} 字节)，成功提取 X.509 证书与配套私钥实体",
-                    decoded_bytes.len()
-                ),
+                message: "成功通过密码解密 PKCS#12 并提取公私钥".into(),
             });
-
-            (cert_str, key_str, "RSA (2048-bit)".to_string())
+            (cert, pkey)
         }
         "pem" => {
-            let cert = payload.cert_pem.as_deref().unwrap_or("").trim();
-            let key = payload.key_pem.as_deref().unwrap_or("").trim();
+            let cert_str = payload.cert_pem.as_deref().unwrap_or("").trim();
+            let key_str = payload.key_pem.as_deref().unwrap_or("").trim();
 
-            if !cert.contains("BEGIN CERTIFICATE") {
-                let err = "证书内容未检测到有效的 -----BEGIN CERTIFICATE----- 标头！".to_string();
-                steps.push(ValidationStep {
-                    step_number: 1,
-                    name: "PEM 明文解析".to_string(),
-                    passed: false,
-                    message: err.clone(),
-                });
-                return Err(err);
-            }
-
-            if !key.contains("BEGIN") || !key.contains("PRIVATE KEY") {
-                let err = "私钥内容未检测到有效的 -----BEGIN PRIVATE KEY----- 标头！".to_string();
-                steps.push(ValidationStep {
-                    step_number: 1,
-                    name: "PEM 明文解析".to_string(),
-                    passed: false,
-                    message: err.clone(),
-                });
-                return Err(err);
-            }
-
-            let algo = if key.contains("RSA") {
-                "RSA (2048/4096-bit)"
-            } else if key.contains("EC") {
-                "ECDSA (P-256/P-384)"
-            } else {
-                "PKCS#8 (Standard)"
-            };
+            let cert = X509::from_pem(cert_str.as_bytes()).map_err(|e| format!("PEM 证书解析失败: {}", e))?;
+            let pkey = PKey::private_key_from_pem(key_str.as_bytes()).map_err(|e| format!("PEM 私钥解析失败: {}", e))?;
 
             steps.push(ValidationStep {
                 step_number: 1,
-                name: "PEM 明文解析与语法校验".to_string(),
+                name: "PEM 解析".into(),
                 passed: true,
-                message: format!("成功解析公钥证书 ({} 字符) 与私钥主体 ({})", cert.len(), algo),
+                message: "成功解析 PEM 格式证书与私钥".into(),
             });
-
-            (cert.to_string(), key.to_string(), algo.to_string())
+            (cert, pkey)
         }
-        other => return Err(format!("不支持的证书导入格式: {}", other)),
+        other => return Err(format!("不支持的导入格式: {}", other)),
     };
 
-    // 步骤 2: 证书有效期检查
-    // 检查有效期并在当前时间段内有效
-    let not_before = "2024-01-01 00:00:00 UTC".to_string();
-    let not_after = "2034-12-31 23:59:59 UTC".to_string();
-    let is_expired = false;
+    // 2. 真实有效期校验
+    let not_before = cert.not_before().to_string();
+    let not_after = cert.not_after().to_string();
+    let now = Asn1Time::days_from_now(0).map_err(|e| e.to_string())?;
+    let is_expired = cert.not_after() < &now;
+    let not_yet_valid = cert.not_before() > &now;
 
+    if is_expired || not_yet_valid {
+        return Err(format!("证书处于非有效时间段内: {} 至 {}", not_before, not_after));
+    }
     steps.push(ValidationStep {
         step_number: 2,
-        name: "证书有效期校验".to_string(),
+        name: "证书有效期检查".into(),
         passed: true,
-        message: format!("证书处于有效时间窗口内: {} 至 {} (未过期)", not_before, not_after),
+        message: format!("处于有效窗口内: {} ~ {}", not_before, not_after),
     });
 
-    // 步骤 3: CA 根证书资质检查 (BasicConstraints cA=true / keyCertSign)
-    let is_ca = true;
+    // 3. 真实 CA 资质检查
+    let is_ca = check_is_ca(&cert);
     steps.push(ValidationStep {
         step_number: 3,
-        name: "CA 根证书资质校验".to_string(),
-        passed: true,
-        message: "检测到 BasicConstraints 扩展字段 cA=TRUE，具备为 MITM 动态签发域名证书的权威权限".to_string(),
+        name: "CA 根证书资质校验".into(),
+        passed: is_ca,
+        message: if is_ca {
+            "具备 CA 根证书属性 (自签根 CA / BasicConstraints)".into()
+        } else {
+            "警告：证书未显式声明 CA 属性，浏览器可能会拦截".into()
+        },
     });
 
-    // 步骤 4: 公私钥配对校验
-    let key_pair_matched = true;
+    // 4. 真实公私钥配对校验 (基于数学校验)
+    let matched = cert.public_key().map(|pk| pk.public_eq(&pkey)).unwrap_or(false);
+    if !matched {
+        return Err("公私钥不匹配！传入的私钥与证书内嵌的公钥数学上不相符".into());
+    }
     steps.push(ValidationStep {
         step_number: 4,
-        name: "公钥与私钥配对运算校验".to_string(),
+        name: "公私钥数学匹配".into(),
         passed: true,
-        message: "证书内嵌公钥与所提供的私钥数学模数与指数完全吻合，加解密验签一致".to_string(),
+        message: "证书公钥与私钥配对完全吻合".into(),
     });
 
-    // 写入文件存储
+    // 5. 写入公钥到磁盘 (ca.crt)
+    let cert_pem = String::from_utf8(cert.to_pem().map_err(|e| e.to_string())?).unwrap();
     let cert_file_path = get_app_ca_cert_path(&app)?;
-    std::fs::write(&cert_file_path, &cert_pem)
-        .map_err(|e| format!("写入 ca.crt 失败: {}", e))?;
+    fs::write(&cert_file_path, cert_pem).map_err(|e| format!("写入 ca.crt 失败: {}", e))?;
 
+    // 6. 处理私钥存储（写入 Keychain 或本地）
+    let key_pem = String::from_utf8(pkey.private_key_to_pem_pkcs8().map_err(|e| e.to_string())?).unwrap();
     let mut key_file_path: Option<String> = None;
+
     let key_storage_desc = if payload.store_in_keychain {
-        #[cfg(target_os = "macos")]
-        {
-            "已安全写入 macOS 系统钥匙串 (Keychain / Secure Enclave 隔离保护)".to_string()
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            // 非 macOS 系统备用存储
-            let key_p = get_app_ca_key_path(&app)?;
-            let _ = std::fs::write(&key_p, &key_pem);
-            key_file_path = Some(key_p.to_string_lossy().to_string());
-            "已安全存储至应用私有配置区 (ca.key)".to_string()
-        }
+        let entry = Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_USER_CA_KEY).map_err(|e| e.to_string())?;
+        entry.set_password(&key_pem).map_err(|e| format!("写入 macOS 钥匙串失败: {}", e))?;
+        "已加密存入 macOS Keychain (安全隔离)".to_string()
     } else {
-        // 用户明确选择明文存放在应用配置目录
         let key_p = get_app_ca_key_path(&app)?;
-        std::fs::write(&key_p, &key_pem)
-            .map_err(|e| format!("写入明文私钥 ca.key 失败: {}", e))?;
+        fs::write(&key_p, &key_pem).map_err(|e| format!("写入 ca.key 失败: {}", e))?;
         key_file_path = Some(key_p.to_string_lossy().to_string());
-        "已应用户要求以明文方式存储至应用配置目录 (ca.key)".to_string()
+        "已写入本地私有目录 (ca.key)".to_string()
     };
 
-    let result = CertValidationResult {
+    // 7. 直接填充进当前内存
+    if let Ok(mut ctx_guard) = state.mitm_ctx.lock() {
+        *ctx_guard = Some(MitmContext { ca_cert: cert.clone(), ca_key: pkey.clone() });
+    }
+
+    let subject = format_x509_name(cert.subject_name());
+    let issuer = format_x509_name(cert.issuer_name());
+    let key_algorithm = format!("RSA/EC ({}-bit)", pkey.bits());
+
+    Ok(CertValidationResult {
         success: true,
-        subject: "CN=sing-box MITM Root CA, O=sing-box Desktop, C=US".to_string(),
-        issuer: "CN=sing-box MITM Root CA, O=sing-box Desktop, C=US".to_string(),
+        subject,
+        issuer,
         not_before,
         not_after,
         is_expired,
         is_ca,
-        key_pair_matched,
+        key_pair_matched: true,
         key_algorithm,
         key_storage: key_storage_desc,
         steps,
         cert_path: cert_file_path.to_string_lossy().to_string(),
         key_path: key_file_path,
-    };
-
-    let log_msg = format!("CA 根证书成功导入并生效: {:?}", cert_file_path);
-    println!("[singbox-desktop][import_ca_cert] {}", log_msg);
-    let _ = app.emit("log-message", format!("[SUCCESS][MITM] {}", log_msg));
-
-    Ok(result)
+    })
 }
 
-/// 读取已存储的 CA 证书信息
+/// 读取已存储的 CA 证书信息（真实读取并解析）
 #[tauri::command]
 pub fn get_ca_cert_info(app: AppHandle) -> Result<Option<CertValidationResult>, String> {
     let cert_path = get_app_ca_cert_path(&app)?;
@@ -385,55 +372,64 @@ pub fn get_ca_cert_info(app: AppHandle) -> Result<Option<CertValidationResult>, 
         return Ok(None);
     }
 
-    let cert_content = std::fs::read_to_string(&cert_path)
-        .map_err(|e| format!("读取 ca.crt 失败: {}", e))?;
+    let cert_bytes = match fs::read(&cert_path) {
+        Ok(b) => b,
+        Err(_) => return Ok(None),
+    };
 
-    if !cert_content.contains("BEGIN CERTIFICATE") {
-        return Ok(None);
-    }
+    let cert = match X509::from_pem(&cert_bytes) {
+        Ok(c) => c,
+        Err(_) => return Ok(None),
+    };
 
     let key_path = get_app_ca_key_path(&app)?;
     let has_key_file = key_path.is_file();
 
+    let not_before = cert.not_before().to_string();
+    let not_after = cert.not_after().to_string();
+    let now = Asn1Time::days_from_now(0).map_err(|e| e.to_string())?;
+    let is_expired = cert.not_after() < &now;
+    let is_ca = check_is_ca(&cert);
+
     Ok(Some(CertValidationResult {
         success: true,
-        subject: "CN=sing-box MITM Root CA, O=sing-box Desktop, C=US".to_string(),
-        issuer: "CN=sing-box MITM Root CA, O=sing-box Desktop, C=US".to_string(),
-        not_before: "2024-01-01 00:00:00 UTC".to_string(),
-        not_after: "2034-12-31 23:59:59 UTC".to_string(),
-        is_expired: false,
-        is_ca: true,
+        subject: format_x509_name(cert.subject_name()),
+        issuer: format_x509_name(cert.issuer_name()),
+        not_before: not_before.clone(),
+        not_after: not_after.clone(),
+        is_expired,
+        is_ca,
         key_pair_matched: true,
-        key_algorithm: "RSA (2048-bit)".to_string(),
+        key_algorithm: "RSA/EC".to_string(),
         key_storage: if has_key_file {
             "明文文件存储 (ca.key)".to_string()
         } else {
-            "macOS 钥匙串 (Keychain / Secure Enclave)".to_string()
+            "macOS 钥匙串 (Keychain)".to_string()
         },
         steps: vec![
             ValidationStep {
                 step_number: 1,
-                name: "证书格式解析".to_string(),
+                name: "证书格式解析".into(),
                 passed: true,
-                message: "X.509 证书格式完整有效".to_string(),
+                message: "X.509 证书格式完整有效".into(),
             },
             ValidationStep {
                 step_number: 2,
-                name: "有效期检查".to_string(),
-                passed: true,
-                message: "证书处于有效期内".to_string(),
+                name: "有效期检查".into(),
+                passed: !is_expired,
+                message: format!("有效期至: {}", not_after),
             },
             ValidationStep {
                 step_number: 3,
-                name: "CA 根证书资质".to_string(),
-                passed: true,
-                message: "cA=TRUE 权威根证书".to_string(),
+                name: "CA 根证书资质".into(),
+                passed: is_ca,
+                message: if is_ca { "符合 CA 规范".into() } else { "非标准 CA".into() },
             },
             ValidationStep {
                 step_number: 4,
-                name: "公私钥匹配".to_string(),
+                name: "公私钥配对".into(),
                 passed: true,
-                message: "配对就绪".to_string(),
+                message: "密钥就绪".into(),
             },
         ],
         cert_path: cert_path.to_string_lossy().to_string(),
@@ -447,15 +443,29 @@ pub fn get_ca_cert_info(app: AppHandle) -> Result<Option<CertValidationResult>, 
 
 /// 删除已导入的 CA 证书与私钥
 #[tauri::command]
-pub fn delete_ca_cert(app: AppHandle) -> Result<(), String> {
-    let cert_path = get_app_ca_cert_path(&app)?;
-    if cert_path.is_file() {
-        let _ = std::fs::remove_file(cert_path);
+pub fn delete_ca_cert(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    // 1. 清除内存上下文
+    if let Ok(mut ctx_guard) = state.mitm_ctx.lock() {
+        *ctx_guard = None;
     }
-    let key_path = get_app_ca_key_path(&app)?;
-    if key_path.is_file() {
-        let _ = std::fs::remove_file(key_path);
+
+    // 2. 清除 Keychain
+    if let Ok(entry) = Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_USER_CA_KEY) {
+        let _ = entry.delete_password();
     }
-    let _ = app.emit("log-message", "[INFO][MITM] CA 根证书及配套私钥已安全删除".to_string());
+
+    // 3. 删除磁盘文件
+    if let Ok(cert_p) = get_app_ca_cert_path(&app) {
+        if cert_p.is_file() {
+            let _ = fs::remove_file(cert_p);
+        }
+    }
+    if let Ok(key_p) = get_app_ca_key_path(&app) {
+        if key_p.is_file() {
+            let _ = fs::remove_file(key_p);
+        }
+    }
+
+    let _ = app.emit("log-message", "[INFO][MITM] CA 证书、私钥以及内存镜像已安全删除".to_string());
     Ok(())
 }

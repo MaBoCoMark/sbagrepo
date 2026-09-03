@@ -23,6 +23,7 @@ pub fn run() {
             child_pid: Mutex::new(None),
             is_admin: Mutex::new(false),
             manual_stop: Mutex::new(false),
+            mitm_ctx: Mutex::new(None),
             mitm_listener: Mutex::new(None),
             mitm_port: Mutex::new(None),
             tray_mode: Mutex::new("stopped".to_string()),
