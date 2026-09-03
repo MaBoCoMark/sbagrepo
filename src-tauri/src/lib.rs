@@ -1,6 +1,7 @@
 pub mod commands;
 pub mod paths;
 pub mod state;
+pub mod tray;
 pub mod utils;
 
 use state::AppState;
@@ -20,14 +21,24 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(AppState {
             child_pid: Mutex::new(None),
+            is_admin: Mutex::new(false),
+            manual_stop: Mutex::new(false),
             mitm_listener: Mutex::new(None),
             mitm_port: Mutex::new(None),
+            tray_mode: Mutex::new("stopped".to_string()),
+            tray_port: Mutex::new("-".to_string()),
+            tray_type: Mutex::new("Mixed".to_string()),
+        })
+        .setup(|app| {
+            tray::setup_tray(app)?;
+            Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             commands::check_config,
             commands::start_normal,
             commands::start_admin,
             commands::stop_process,
+            commands::update_tray_info,
             commands::read_config_file,
             commands::import_config_file,
             commands::check_binary_status,

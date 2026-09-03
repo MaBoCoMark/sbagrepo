@@ -25,3 +25,12 @@ export interface RuntimeOverrides {
   port: number | null;
   logLevel: string | null;
 }
+
+export interface UnexpectedExitPayload {
+  code: number | null;
+  message: string;
+  mode: string;
+  timestamp?: string;
+}
+
+export type InboundProxyType = 'Mixed' | 'HTTP only' | 'SOCKS5 only';

@@ -1,7 +1,39 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { BinaryStatusInfo, EnvDetectionResult, RunningMode } from '../types/singbox';
+import {
+  BinaryStatusInfo,
+  EnvDetectionResult,
+  InboundProxyType,
+  RunningMode,
+  UnexpectedExitPayload,
+} from '../types/singbox';
+
+export function detectInboundType(configContent: string): InboundProxyType {
+  if (!configContent || !configContent.trim()) {
+    return 'Mixed';
+  }
+  try {
+    const parsed = JSON.parse(configContent);
+    const inbounds = Array.isArray(parsed.inbounds) ? parsed.inbounds : [];
+    const hasMixed = inbounds.some((ib: any) => ib.type === 'mixed' || ib.tag === 'mixed-in');
+    const hasHttp = inbounds.some((ib: any) => ib.type === 'http');
+    const hasSocks = inbounds.some((ib: any) => ib.type === 'socks');
+
+    if (hasMixed || (hasHttp && hasSocks)) {
+      return 'Mixed';
+    }
+    if (hasHttp && !hasSocks) {
+      return 'HTTP only';
+    }
+    if (hasSocks && !hasHttp) {
+      return 'SOCKS5 only';
+    }
+    return 'Mixed';
+  } catch {
+    return 'Mixed';
+  }
+}
 
 export interface UseSingboxConfigReturn {
   binaryPath: string;
@@ -33,6 +65,10 @@ export interface UseSingboxConfigReturn {
   revertPort: () => void;
   setOverrideLogLevel: (level: string | null) => void;
   revertLogLevel: () => void;
+  // 托盘代理类型与意外退出监控
+  inboundProxyType: InboundProxyType;
+  unexpectedExit: UnexpectedExitPayload | null;
+  clearUnexpectedExit: () => void;
 }
 
 const STORAGE_PORT_KEY = 'singbox_override_port';
@@ -50,6 +86,7 @@ export function useSingboxConfig(): UseSingboxConfigReturn {
   const [runningMode, setRunningMode] = useState<RunningMode>('stopped');
   const [isLoadingConfig, setIsLoadingConfig] = useState<boolean>(false);
   const [binaryStatus, setBinaryStatus] = useState<BinaryStatusInfo | null>(null);
+  const [unexpectedExit, setUnexpectedExit] = useState<UnexpectedExitPayload | null>(null);
 
   // 初始化从 localStorage 读取临时覆盖状态
   const [overridePort, setInternalOverridePort] = useState<number | null>(() => {
@@ -111,6 +148,11 @@ export function useSingboxConfig(): UseSingboxConfigReturn {
   const isLogLevelOverridden =
     overrideLogLevel !== null &&
     overrideLogLevel.toLowerCase() !== originalLogLevel.toLowerCase();
+
+  // 当前配置的入站代理协议类型 (Mixed / HTTP only / SOCKS5 only)
+  const inboundProxyType = useMemo(() => {
+    return detectInboundType(configContent);
+  }, [configContent]);
 
   // 同步覆盖配置到 Rust 后端临时运行时文件 (runtime_config.json)
   const syncRuntimeOverride = useCallback(
@@ -220,7 +262,6 @@ export function useSingboxConfig(): UseSingboxConfigReturn {
   const importConfigFile = useCallback(
     async (rawText: string): Promise<string> => {
       console.log('[useSingboxConfig] 准备校验并导入用户上传的配置...');
-      // 前端先行做一遍 JSON 校验
       let parsedJson: any;
       try {
         parsedJson = JSON.parse(rawText);
@@ -228,13 +269,11 @@ export function useSingboxConfig(): UseSingboxConfigReturn {
         throw new Error(`文件不是合法的 JSON 格式: ${err.message || String(err)}`);
       }
 
-      // 通过 Tauri 持久化至固定区域 app_config_dir/config.json
       try {
         const savedFormatted = await invoke<string>('import_config_file', {
           content: JSON.stringify(parsedJson, null, 2),
         });
         setConfigContent(savedFormatted);
-        // 重置/同步当前临时覆盖
         syncRuntimeOverride(overridePort, overrideLogLevel);
         return savedFormatted;
       } catch (err: any) {
@@ -281,6 +320,10 @@ export function useSingboxConfig(): UseSingboxConfigReturn {
     }
   }, [defaultBinaryName, configPath, checkBinaryStatus, loadConfig]);
 
+  const clearUnexpectedExit = useCallback(() => {
+    setUnexpectedExit(null);
+  }, []);
+
   // 组件挂载时自动加载配置、检测二进制并同步覆盖状态
   useEffect(() => {
     loadConfig();
@@ -292,22 +335,50 @@ export function useSingboxConfig(): UseSingboxConfigReturn {
 
   // 监听后端 sing-box 进程退出事件
   useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    const setupListener = async () => {
+    let unlistenStopped: (() => void) | undefined;
+    let unlistenUnexpected: (() => void) | undefined;
+
+    const setupListeners = async () => {
       try {
-        unlisten = await listen('process-stopped', () => {
+        unlistenStopped = await listen('process-stopped', () => {
           setRunningMode('stopped');
         });
       } catch (err) {
         console.warn('[useSingboxConfig] 注册 process-stopped 监听器失败:', err);
       }
+
+      try {
+        unlistenUnexpected = await listen<UnexpectedExitPayload>(
+          'process-unexpected-exit',
+          (event) => {
+            console.warn('[useSingboxConfig] 监测到内核意外退出:', event.payload);
+            setRunningMode('stopped');
+            setUnexpectedExit(event.payload);
+          }
+        );
+      } catch (err) {
+        console.warn('[useSingboxConfig] 注册 process-unexpected-exit 监听器失败:', err);
+      }
     };
-    setupListener();
+    setupListeners();
 
     return () => {
-      if (unlisten) unlisten();
+      if (unlistenStopped) unlistenStopped();
+      if (unlistenUnexpected) unlistenUnexpected();
     };
   }, []);
+
+  // 状态发生变化时，实时同步并更新系统托盘菜单
+  useEffect(() => {
+    const portStr = effectivePort ? String(effectivePort) : '-';
+    invoke('update_tray_info', {
+      mode: runningMode,
+      port: portStr,
+      proxyType: inboundProxyType,
+    }).catch((err) => {
+      console.debug('[useSingboxConfig] 同步更新托盘菜单信息:', err);
+    });
+  }, [runningMode, effectivePort, inboundProxyType]);
 
   return {
     binaryPath,
@@ -337,5 +408,8 @@ export function useSingboxConfig(): UseSingboxConfigReturn {
     revertPort,
     setOverrideLogLevel,
     revertLogLevel,
+    inboundProxyType,
+    unexpectedExit,
+    clearUnexpectedExit,
   };
 }

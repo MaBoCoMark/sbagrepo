@@ -22,6 +22,7 @@ interface ActionToolbarProps {
   binaryStatus: BinaryStatusInfo | null;
   onImportConfig: (text: string) => Promise<string>;
   onImportBinary: (base64: string) => Promise<BinaryStatusInfo>;
+  onClearUnexpectedExit?: () => void;
 }
 
 export const ActionToolbar: React.FC<ActionToolbarProps> = ({
@@ -33,6 +34,7 @@ export const ActionToolbar: React.FC<ActionToolbarProps> = ({
   binaryStatus,
   onImportConfig,
   onImportBinary,
+  onClearUnexpectedExit,
 }) => {
   const [loadingAction, setLoadingAction] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<FeedbackState | null>(null);
@@ -113,7 +115,6 @@ export const ActionToolbar: React.FC<ActionToolbarProps> = ({
         const reader = new FileReader();
         reader.onload = () => {
           const res = reader.result as string;
-          // 剥离可能的 data URL 前缀
           const commaIdx = res.indexOf(',');
           resolve(commaIdx >= 0 ? res.slice(commaIdx + 1) : res);
         };
@@ -171,6 +172,7 @@ export const ActionToolbar: React.FC<ActionToolbarProps> = ({
   };
 
   const handleStartNormal = async () => {
+    if (onClearUnexpectedExit) onClearUnexpectedExit();
     console.log('[ActionToolbar] 正在以普通模式启动 sing-box...');
     setLoadingAction('normal');
     try {
@@ -196,6 +198,7 @@ export const ActionToolbar: React.FC<ActionToolbarProps> = ({
   };
 
   const handleStartAdmin = async () => {
+    if (onClearUnexpectedExit) onClearUnexpectedExit();
     console.log('[ActionToolbar] 正在以管理员提权模式启动 sing-box...');
     setLoadingAction('admin');
     try {
@@ -221,6 +224,7 @@ export const ActionToolbar: React.FC<ActionToolbarProps> = ({
   };
 
   const handleStop = async () => {
+    if (onClearUnexpectedExit) onClearUnexpectedExit();
     console.log('[ActionToolbar] 正在请求终止 sing-box 进程...');
     setLoadingAction('stop');
     try {
@@ -269,7 +273,7 @@ export const ActionToolbar: React.FC<ActionToolbarProps> = ({
         style={{ display: 'none' }}
       />
 
-      {/* 核心文件管理区域 (不再需要手动计算或填写路径) */}
+      {/* 核心文件管理区域 */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
         {/* 配置文件状态与导入 */}
         <div

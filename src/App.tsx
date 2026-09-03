@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ThemeProvider, BaseStyles, UnderlineNav } from '@primer/react';
+import { ThemeProvider, BaseStyles, UnderlineNav, Banner, Button } from '@primer/react';
 import { GearIcon, TerminalIcon, KeyIcon } from '@primer/octicons-react';
 
 import { Header } from './components/Header';
@@ -8,6 +8,7 @@ import { StatusCard } from './components/StatusCard';
 import { ConfigViewer } from './components/ConfigViewer';
 import { LogBoard } from './components/LogBoard';
 import { MitmPage } from './components/MitmPage';
+import { UnexpectedExitModal } from './components/UnexpectedExitModal';
 import { useSingboxConfig } from './hooks/useSingboxConfig';
 import { useLogBuffer } from './hooks/useLogBuffer';
 
@@ -38,6 +39,8 @@ export const App: React.FC = () => {
     revertPort,
     setOverrideLogLevel,
     revertLogLevel,
+    unexpectedExit,
+    clearUnexpectedExit,
   } = useSingboxConfig();
 
   // 20MB 内存 FIFO 日志缓冲区管理 Hook
@@ -54,6 +57,16 @@ export const App: React.FC = () => {
             backgroundColor: 'var(--bg-canvas, #ffffff)',
           }}
         >
+          {/* 内核意外退出强提醒模态弹窗 */}
+          <UnexpectedExitModal
+            exitInfo={unexpectedExit}
+            onClose={clearUnexpectedExit}
+            onViewLogs={() => {
+              clearUnexpectedExit();
+              setActiveTab('logs');
+            }}
+          />
+
           <Header runningMode={runningMode} />
 
           <div
@@ -111,6 +124,40 @@ export const App: React.FC = () => {
               gap: '24px',
             }}
           >
+            {/* 若发生过内核意外退出，在控制台顶部常驻醒目标识条 */}
+            {unexpectedExit && (
+              <Banner
+                variant="critical"
+                title="⚠️ 底层内核意外退出告警"
+                description={
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      flexWrap: 'wrap',
+                      gap: '12px',
+                      marginTop: '4px',
+                    }}
+                  >
+                    <span style={{ fontSize: '12px', lineHeight: '1.5' }}>
+                      {unexpectedExit.message}
+                    </span>
+                    <Button
+                      size="small"
+                      variant="danger"
+                      onClick={() => {
+                        setActiveTab('logs');
+                      }}
+                    >
+                      切换至日志看板查看
+                    </Button>
+                  </div>
+                }
+                onDismiss={clearUnexpectedExit}
+              />
+            )}
+
             {activeTab === 'console' && (
               <>
                 <ActionToolbar
@@ -123,6 +170,7 @@ export const App: React.FC = () => {
                   binaryStatus={binaryStatus}
                   onImportConfig={importConfigFile}
                   onImportBinary={importBinaryFile}
+                  onClearUnexpectedExit={clearUnexpectedExit}
                 />
 
                 <StatusCard
