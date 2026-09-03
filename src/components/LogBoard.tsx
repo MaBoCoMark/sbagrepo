@@ -18,11 +18,22 @@ export const LogBoard: React.FC<LogBoardProps> = ({ logs, setLogs }) => {
 
     const setupListener = async () => {
       try {
+        console.log('[LogBoard] 正在注册 Tauri "log-message" 实时日志监听器...');
         unlisten = await listen<string>('log-message', (event) => {
-          setLogs((prev) => [...prev, String(event.payload)]);
+          const line = String(event.payload);
+          // 在 Webview Console 实时输出
+          if (line.includes('[ERROR]') || line.includes('FATAL') || line.includes('error')) {
+            console.error('[sing-box-stream]', line);
+          } else if (line.includes('[WARN]') || line.includes('warning')) {
+            console.warn('[sing-box-stream]', line);
+          } else {
+            console.log('[sing-box-stream]', line);
+          }
+          setLogs((prev) => [...prev, line]);
         });
+        console.log('[LogBoard] "log-message" 监听器注册成功');
       } catch (err) {
-        console.warn('Tauri event listener not available in web preview:', err);
+        console.warn('[LogBoard] Tauri 事件监听不可用 (Web 预览环境可忽略):', err);
       }
     };
 
@@ -42,11 +53,13 @@ export const LogBoard: React.FC<LogBoardProps> = ({ logs, setLogs }) => {
   }, [logs, autoScroll]);
 
   const handleClear = () => {
+    console.log('[LogBoard] 用户清空日志记录');
     setLogs([]);
   };
 
   const handleCopy = () => {
     const text = logs.join('\n');
+    console.log(`[LogBoard] 用户复制日志 (${logs.length} 行)`);
     navigator.clipboard.writeText(text).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
