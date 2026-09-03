@@ -1,25 +1,31 @@
-import { defineConfig } from 'vite';
-import react from '@vitejs/plugin-react';
+import { defineConfig } from "vite";
+import { resolve } from "path";
+import { fileURLToPath } from "url";
+import path from "path";
+import yaml from "@rollup/plugin-yaml";
 
-// https://vitejs.dev/config/
+// Define __dirname for ES Modules
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
 export default defineConfig({
-  plugins: [react()],
-  // Prevent vite from obscuring rust errors
-  clearScreen: false,
-  // Tauri expects a fixed port, fail if that port is not available
+  plugins: [
+    yaml()
+  ],
+  build: {
+    rollupOptions: {
+      input: {
+        configurator: resolve(__dirname, "configurator.html"),
+        overlay: resolve(__dirname, "overlay.html"),
+      },
+    },
+  },
   server: {
     port: 1420,
     strictPort: true,
-    host: '127.0.0.1'
-  },
-  // To access env vars that start with TAURI_
-  envPrefix: ['VITE_', 'TAURI_ENV_*'],
-  build: {
-    // Tauri uses Chromium on Windows and WebKit on macOS and Linux
-    target: process.env.TAURI_ENV_PLATFORM == 'windows' ? 'chrome105' : 'safari13',
-    // Don't minify for debug builds
-    minify: !process.env.TAURI_ENV_DEBUG ? 'esbuild' : false,
-    // Produce sourcemaps for debug builds
-    sourcemap: !!process.env.TAURI_ENV_DEBUG,
+    // Add this to help Vite handle the HMR for Tauri
+    watch: {
+      ignored: ["**/src-tauri/**"],
+    },
   },
 });

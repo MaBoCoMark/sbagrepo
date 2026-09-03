@@ -12,12 +12,10 @@
     "windows": [
       {
         "label": "overlay",
-        "url": "overlay.html",
-        "width": 800,
-        "height": 200,
-        "maximized": false,
-        "resizable": true,
-        "decorations": true,
+        "url": "overlay.html", 
+        "maximized": true,
+        "resizable": false,
+        "decorations": false,
         "transparent": true,
         "alwaysOnTop": true,
         "focus": false,
