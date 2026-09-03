@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use serde::Serialize;
 
 pub struct AppState {
@@ -396,7 +396,7 @@ fn check_config(
 
 // 按钮 2：普通启动 (Direct Run - 无需管理员，适合 Mixed/SOCKS 模式)
 #[tauri::command]
-fn start_normal(
+async fn start_normal( // 👈 关键点：必须是 async fn！
     app: AppHandle,
     state: State<'_, AppState>,
     binary_path: String,
@@ -443,13 +443,19 @@ fn start_normal(
         ),
     );
 
-    let mut child = match TokioCommand::new(&resolved_binary)
-        .args(["run", "-c"])
+    let mut cmd = TokioCommand::new(&resolved_binary);
+    cmd.args(["run", "-c"])
         .arg(&resolved_config)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
+        .stderr(Stdio::piped());
+
+    // Windows 下隐藏控制台黑框
+    #[cfg(target_os = "windows")]
     {
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+
+    let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
             let err_msg = format!(
@@ -471,9 +477,8 @@ fn start_normal(
         }
     }
 
+    // 监听 stdout 日志
     let stdout = child.stdout.take();
-    let stderr = child.stderr.take();
-
     if let Some(stdout) = stdout {
         let app_clone = app.clone();
         tauri::async_runtime::spawn(async move {
@@ -485,6 +490,8 @@ fn start_normal(
         });
     }
 
+    // 监听 stderr 日志
+    let stderr = child.stderr.take();
     if let Some(stderr) = stderr {
         let app_clone = app.clone();
         tauri::async_runtime::spawn(async move {
@@ -496,9 +503,19 @@ fn start_normal(
         });
     }
 
+    // 监听进程退出并自动清理 PID
     let app_clone2 = app.clone();
     tauri::async_runtime::spawn(async move {
-        match child.wait().await {
+        let exit_res = child.wait().await;
+        
+        // 进程退出后，重置 AppState 中的 child_pid
+        if let Some(state) = app_clone2.try_state::<AppState>() {
+            if let Ok(mut pid_guard) = state.child_pid.lock() {
+                *pid_guard = None;
+            }
+        }
+
+        match exit_res {
             Ok(status) => {
                 let msg = format!("[singbox-desktop] sing-box 进程已退出，状态: {}", status);
                 println!("{}", msg);
