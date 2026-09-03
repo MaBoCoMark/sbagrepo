@@ -15,7 +15,7 @@ pub fn check_config(
         binary_path, config_path
     );
 
-    let resolved_binary = match resolve_binary(&binary_path) {
+    let resolved_binary = match resolve_binary(&binary_path, Some(&app)) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("[singbox-desktop][check_config] 错误: {}", e);
@@ -24,7 +24,7 @@ pub fn check_config(
         }
     };
 
-    let resolved_config = match resolve_config(&config_path) {
+    let resolved_config = match resolve_config(&config_path, Some(&app)) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("[singbox-desktop][check_config] 错误: {}", e);

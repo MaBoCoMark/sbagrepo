@@ -1,30 +1,43 @@
 import React, { useState } from 'react';
 import { ThemeProvider, BaseStyles, UnderlineNav } from '@primer/react';
-import { GearIcon, TerminalIcon } from '@primer/octicons-react';
+import { GearIcon, TerminalIcon, KeyIcon } from '@primer/octicons-react';
 
 import { Header } from './components/Header';
 import { ActionToolbar } from './components/ActionToolbar';
 import { StatusCard } from './components/StatusCard';
 import { ConfigViewer } from './components/ConfigViewer';
 import { LogBoard } from './components/LogBoard';
+import { MitmPage } from './components/MitmPage';
 import { useSingboxConfig } from './hooks/useSingboxConfig';
 import { useLogBuffer } from './hooks/useLogBuffer';
 
 export const App: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<'console' | 'logs'>('console');
+  const [activeTab, setActiveTab] = useState<'console' | 'logs' | 'mitm'>('console');
 
   // 配置与运行状态管理通过解耦的 Hook 封装
   const {
     binaryPath,
-    setBinaryPath,
     configPath,
-    setConfigPath,
     configContent,
     runningMode,
     setRunningMode,
     isLoadingConfig,
     loadConfig,
-    handleAutoDetect,
+    binaryStatus,
+    importConfigFile,
+    importBinaryFile,
+    originalPort,
+    originalLogLevel,
+    overridePort,
+    overrideLogLevel,
+    effectivePort,
+    effectiveLogLevel,
+    isPortOverridden,
+    isLogLevelOverridden,
+    setOverridePort,
+    revertPort,
+    setOverrideLogLevel,
+    revertLogLevel,
   } = useSingboxConfig();
 
   // 20MB 内存 FIFO 日志缓冲区管理 Hook
@@ -61,6 +74,7 @@ export const App: React.FC = () => {
               >
                 控制台与配置
               </UnderlineNav.Item>
+
               <UnderlineNav.Item
                 aria-current={activeTab === 'logs' ? 'page' : undefined}
                 onSelect={(e) => {
@@ -70,6 +84,17 @@ export const App: React.FC = () => {
                 icon={TerminalIcon}
               >
                 实时日志看板
+              </UnderlineNav.Item>
+
+              <UnderlineNav.Item
+                aria-current={activeTab === 'mitm' ? 'page' : undefined}
+                onSelect={(e) => {
+                  e.preventDefault();
+                  setActiveTab('mitm');
+                }}
+                icon={KeyIcon}
+              >
+                MITM 代理与证书
               </UnderlineNav.Item>
             </UnderlineNav>
           </div>
@@ -86,31 +111,48 @@ export const App: React.FC = () => {
               gap: '24px',
             }}
           >
-            {activeTab === 'console' ? (
+            {activeTab === 'console' && (
               <>
                 <ActionToolbar
                   binaryPath={binaryPath}
-                  setBinaryPath={setBinaryPath}
                   configPath={configPath}
-                  setConfigPath={setConfigPath}
+                  configContent={configContent}
                   runningMode={runningMode}
                   setRunningMode={setRunningMode}
-                  onRefreshConfig={() => loadConfig(configPath)}
-                  onAutoDetect={handleAutoDetect}
+                  onRefreshConfig={() => loadConfig()}
+                  binaryStatus={binaryStatus}
+                  onImportConfig={importConfigFile}
+                  onImportBinary={importBinaryFile}
                 />
 
-                <StatusCard configContent={configContent} />
+                <StatusCard
+                  configContent={configContent}
+                  originalPort={originalPort}
+                  effectivePort={effectivePort}
+                  overridePort={overridePort}
+                  isPortOverridden={isPortOverridden}
+                  onOverridePort={setOverridePort}
+                  onRevertPort={revertPort}
+                  originalLogLevel={originalLogLevel}
+                  effectiveLogLevel={effectiveLogLevel}
+                  overrideLogLevel={overrideLogLevel}
+                  isLogLevelOverridden={isLogLevelOverridden}
+                  onOverrideLogLevel={setOverrideLogLevel}
+                  onRevertLogLevel={revertLogLevel}
+                />
 
                 <ConfigViewer
                   configPath={configPath}
                   configContent={configContent}
-                  onReload={() => loadConfig(configPath)}
+                  onReload={() => loadConfig()}
                   isLoading={isLoadingConfig}
                 />
               </>
-            ) : (
-              <LogBoard buffer={logBuffer} />
             )}
+
+            {activeTab === 'logs' && <LogBoard buffer={logBuffer} />}
+
+            {activeTab === 'mitm' && <MitmPage singboxPort={effectivePort} />}
           </main>
         </div>
       </BaseStyles>

@@ -81,7 +81,7 @@ export const LogBoard: React.FC<LogBoardProps> = ({
       {/* 内存与缓冲区容量状态指示条 */}
       <LogStatusBar stats={stats} />
 
-      {/* 日志终端视口容器 */}
+      {/* 日志终端视口容器 (统一先采用白色背景，便于后续接入全局主题切换) */}
       <div
         id="logs"
         ref={containerRef}
@@ -90,11 +90,11 @@ export const LogBoard: React.FC<LogBoardProps> = ({
           minHeight: '420px',
           maxHeight: 'calc(100vh - 240px)',
           overflowY: 'auto',
-          backgroundColor: '#0d1117',
-          border: '1px solid #30363d',
+          backgroundColor: '#ffffff',
+          border: '1px solid var(--border-default, #d0d7de)',
           borderRadius: '8px',
           padding: '12px',
-          boxShadow: 'inset 0 1px 3px rgba(0,0,0,0.4)',
+          boxShadow: 'inset 0 1px 2px rgba(0, 0, 0, 0.04)',
         }}
       >
         {visibleLogs.length === 0 ? (
@@ -106,12 +106,12 @@ export const LogBoard: React.FC<LogBoardProps> = ({
               justifyContent: 'center',
               height: '100%',
               minHeight: '300px',
-              color: '#8b949e',
+              color: '#57606a',
               gap: '12px',
             }}
           >
-            <TerminalIcon size={36} fill="#8b949e" />
-            <Text as="p" style={{ fontSize: '13px', margin: 0, textAlign: 'center' }}>
+            <TerminalIcon size={36} fill="#8c959f" />
+            <Text as="p" style={{ fontSize: '13px', margin: 0, textAlign: 'center', color: '#57606a' }}>
               {stats.totalCount > 0
                 ? '当前筛选条件下暂无匹配日志。'
                 : '暂无日志输出。启动 sing-box 后，实时输出日志将流式展示在此处。'}

@@ -20,6 +20,8 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(AppState {
             child_pid: Mutex::new(None),
+            mitm_listener: Mutex::new(None),
+            mitm_port: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             commands::check_config,
@@ -27,7 +29,17 @@ pub fn run() {
             commands::start_admin,
             commands::stop_process,
             commands::read_config_file,
-            commands::detect_environment
+            commands::import_config_file,
+            commands::check_binary_status,
+            commands::import_binary_file,
+            commands::save_runtime_override,
+            commands::detect_environment,
+            commands::sniff_mitm_port,
+            commands::toggle_mitm_listener,
+            commands::get_mitm_status,
+            commands::import_ca_cert,
+            commands::get_ca_cert_info,
+            commands::delete_ca_cert
         ])
         .run(tauri::generate_context!())
         .expect("error while running singbox desktop application");

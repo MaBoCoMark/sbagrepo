@@ -1,7 +1,7 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { EnvDetectionResult, RunningMode } from '../types/singbox';
+import { BinaryStatusInfo, EnvDetectionResult, RunningMode } from '../types/singbox';
 
 export interface UseSingboxConfigReturn {
   binaryPath: string;
@@ -15,97 +15,291 @@ export interface UseSingboxConfigReturn {
   isLoadingConfig: boolean;
   loadConfig: (targetConfigPath?: string) => Promise<void>;
   handleAutoDetect: () => Promise<EnvDetectionResult | null>;
+  // 核心导入与内核状态
+  binaryStatus: BinaryStatusInfo | null;
+  checkBinaryStatus: () => Promise<BinaryStatusInfo | null>;
+  importConfigFile: (rawText: string) => Promise<string>;
+  importBinaryFile: (base64Data: string) => Promise<BinaryStatusInfo>;
+  // 运行时端口与日志级别临时覆盖 (Temporary Overrides)
+  originalPort: number | string;
+  originalLogLevel: string;
+  overridePort: number | null;
+  overrideLogLevel: string | null;
+  effectivePort: number | string;
+  effectiveLogLevel: string;
+  isPortOverridden: boolean;
+  isLogLevelOverridden: boolean;
+  setOverridePort: (port: number | null) => void;
+  revertPort: () => void;
+  setOverrideLogLevel: (level: string | null) => void;
+  revertLogLevel: () => void;
 }
+
+const STORAGE_PORT_KEY = 'singbox_override_port';
+const STORAGE_LOG_LEVEL_KEY = 'singbox_override_loglevel';
 
 export function useSingboxConfig(): UseSingboxConfigReturn {
   const isMac = typeof navigator !== 'undefined' && navigator.userAgent.toLowerCase().includes('mac');
-  const defaultBinary = isMac
-    ? 'src-tauri/binaries/sing-box-aarch64-apple-darwin'
-    : 'src-tauri/binaries/sing-box-x86_64-pc-windows-msvc.exe';
+  const defaultBinaryName = isMac
+    ? 'sing-box-aarch64-apple-darwin'
+    : 'sing-box-x86_64-pc-windows-msvc.exe';
 
-  const [binaryPath, setBinaryPath] = useState<string>(defaultBinary);
+  const [binaryPath, setBinaryPath] = useState<string>(defaultBinaryName);
   const [configPath, setConfigPath] = useState<string>('config.json');
-  const [configContent, setConfigContent] = useState<string>('');
+  const [configContent, setConfigContent] = useState<string>('{}');
   const [runningMode, setRunningMode] = useState<RunningMode>('stopped');
   const [isLoadingConfig, setIsLoadingConfig] = useState<boolean>(false);
+  const [binaryStatus, setBinaryStatus] = useState<BinaryStatusInfo | null>(null);
 
-  const loadConfig = useCallback(async (targetConfigPath?: string) => {
-    const activePath = targetConfigPath || configPath;
-    setIsLoadingConfig(true);
-    console.log('[useSingboxConfig] 正在读取配置文件:', activePath);
+  // 初始化从 localStorage 读取临时覆盖状态
+  const [overridePort, setInternalOverridePort] = useState<number | null>(() => {
     try {
-      const content = await invoke<string>('read_config_file', { configPath: activePath });
+      const saved = localStorage.getItem(STORAGE_PORT_KEY);
+      if (saved) {
+        const parsed = parseInt(saved, 10);
+        if (!isNaN(parsed) && parsed >= 1024 && parsed <= 65535) {
+          return parsed;
+        }
+      }
+    } catch {
+      // 忽略存储错误
+    }
+    return null;
+  });
+
+  const [overrideLogLevel, setInternalOverrideLogLevel] = useState<string | null>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_LOG_LEVEL_KEY);
+      if (saved) return saved.toLowerCase();
+    } catch {
+      // 忽略存储错误
+    }
+    return null;
+  });
+
+  // 解析配置文件本身的原始端口与原始日志级别
+  const { originalPort, originalLogLevel } = useMemo(() => {
+    if (!configContent || !configContent.trim()) {
+      return { originalPort: 2080, originalLogLevel: 'info' };
+    }
+    try {
+      const parsed = JSON.parse(configContent);
+      const inbounds = Array.isArray(parsed.inbounds) ? parsed.inbounds : [];
+      const mixedInbound =
+        inbounds.find((ib: any) => ib.tag === 'mixed-in') ||
+        inbounds.find((ib: any) => ib.type === 'mixed') ||
+        inbounds[0];
+
+      const port = mixedInbound?.listen_port ?? mixedInbound?.port ?? 2080;
+      const level = (parsed.log?.level || 'info').toLowerCase();
+      return { originalPort: port, originalLogLevel: level };
+    } catch {
+      return { originalPort: 2080, originalLogLevel: 'info' };
+    }
+  }, [configContent]);
+
+  // 计算最终生效的端口与日志级别
+  const effectivePort = overridePort !== null ? overridePort : originalPort;
+  const effectiveLogLevel = overrideLogLevel !== null ? overrideLogLevel : originalLogLevel;
+
+  // 判断是否与原始文件存在覆盖差异
+  const isPortOverridden =
+    overridePort !== null &&
+    String(overridePort) !== String(originalPort) &&
+    typeof originalPort === 'number';
+
+  const isLogLevelOverridden =
+    overrideLogLevel !== null &&
+    overrideLogLevel.toLowerCase() !== originalLogLevel.toLowerCase();
+
+  // 同步覆盖配置到 Rust 后端临时运行时文件 (runtime_config.json)
+  const syncRuntimeOverride = useCallback(
+    async (port: number | null, level: string | null) => {
+      try {
+        await invoke('save_runtime_override', {
+          overridePort: port,
+          overrideLogLevel: level,
+        });
+      } catch (err) {
+        console.warn('[useSingboxConfig] 同步运行时覆盖配置失败:', err);
+      }
+    },
+    []
+  );
+
+  const setOverridePort = useCallback(
+    (port: number | null) => {
+      setInternalOverridePort(port);
+      if (port !== null) {
+        try {
+          localStorage.setItem(STORAGE_PORT_KEY, String(port));
+        } catch {}
+      } else {
+        try {
+          localStorage.removeItem(STORAGE_PORT_KEY);
+        } catch {}
+      }
+      syncRuntimeOverride(port, overrideLogLevel);
+    },
+    [overrideLogLevel, syncRuntimeOverride]
+  );
+
+  const revertPort = useCallback(() => {
+    console.log('[useSingboxConfig] 还原监听端口至原始配置:', originalPort);
+    setOverridePort(null);
+  }, [setOverridePort, originalPort]);
+
+  const setOverrideLogLevel = useCallback(
+    (level: string | null) => {
+      const normalized = level ? level.toLowerCase() : null;
+      setInternalOverrideLogLevel(normalized);
+      if (normalized !== null) {
+        try {
+          localStorage.setItem(STORAGE_LOG_LEVEL_KEY, normalized);
+        } catch {}
+      } else {
+        try {
+          localStorage.removeItem(STORAGE_LOG_LEVEL_KEY);
+        } catch {}
+      }
+      syncRuntimeOverride(overridePort, normalized);
+    },
+    [overridePort, syncRuntimeOverride]
+  );
+
+  const revertLogLevel = useCallback(() => {
+    console.log('[useSingboxConfig] 还原日志级别至原始配置:', originalLogLevel);
+    setOverrideLogLevel(null);
+  }, [setOverrideLogLevel, originalLogLevel]);
+
+  // 读取固定区域的配置文件 (默认 app_config_dir/config.json，不存在则生成空 JSON {})
+  const loadConfig = useCallback(async (targetConfigPath?: string) => {
+    setIsLoadingConfig(true);
+    console.log('[useSingboxConfig] 正在从固定应用存储区加载配置文件...');
+    try {
+      const content = await invoke<string>('read_config_file', {
+        configPath: targetConfigPath || null,
+      });
       console.log(`[useSingboxConfig] 配置文件读取成功 (${content.length} 字节)`);
-      setConfigContent(content);
+      setConfigContent(content.trim() ? content : '{}\n');
     } catch (err) {
-      console.error('[useSingboxConfig] 通过 Tauri 读取配置文件失败:', err);
-      console.log('[useSingboxConfig] 尝试通过 HTTP fetch 作为后备方式获取 /config.json...');
+      console.error('[useSingboxConfig] 读取配置文件失败:', err);
       try {
         const response = await fetch('/config.json');
         if (response.ok) {
           const text = await response.text();
-          console.log('[useSingboxConfig] HTTP fetch 读取 /config.json 成功');
           setConfigContent(text);
         } else {
-          console.warn('[useSingboxConfig] HTTP fetch 返回状态码:', response.status);
+          setConfigContent('{}');
         }
-      } catch (fetchErr) {
-        console.error('[useSingboxConfig] HTTP fetch 后备读取也失败:', fetchErr);
+      } catch {
+        setConfigContent('{}');
       }
     } finally {
       setIsLoadingConfig(false);
     }
-  }, [configPath]);
+  }, []);
 
-  const handleAutoDetect = useCallback(async () => {
-    console.log('[useSingboxConfig] 触发运行环境及文件路径自动探测...');
+  // 检查 sing-box 二进制内核是否已导入
+  const checkBinaryStatus = useCallback(async (): Promise<BinaryStatusInfo | null> => {
     try {
-      const result = await invoke<EnvDetectionResult>('detect_environment', {
-        defaultBinary,
-        defaultConfig: configPath || 'config.json',
-      });
-      console.log('[useSingboxConfig] 环境探测结果:', result);
-
-      if (result.binary_found) {
-        console.log('[useSingboxConfig] 自动定位到 sing-box 可执行文件:', result.binary_path);
-        setBinaryPath(result.binary_path);
-      } else {
-        console.warn('[useSingboxConfig] 未自动找到有效 sing-box 可执行文件，保留当前设置:', binaryPath);
+      const res = await invoke<BinaryStatusInfo>('check_binary_status');
+      console.log('[useSingboxConfig] 内核状态检测结果:', res);
+      setBinaryStatus(res);
+      if (res.imported) {
+        setBinaryPath(res.binary_path);
       }
-
-      if (result.config_found) {
-        console.log('[useSingboxConfig] 自动定位到配置文件:', result.config_path);
-        setConfigPath(result.config_path);
-        loadConfig(result.config_path);
-      } else {
-        console.warn('[useSingboxConfig] 未自动找到配置文件，保留当前设置:', configPath);
-        loadConfig(configPath);
-      }
-      return result;
+      return res;
     } catch (err) {
-      console.error('[useSingboxConfig] 执行 detect_environment 出错:', err);
-      loadConfig(configPath);
+      console.warn('[useSingboxConfig] 检测二进制状态失败:', err);
       return null;
     }
-  }, [defaultBinary, configPath, binaryPath, loadConfig]);
+  }, []);
 
-  // 组件挂载时自动探测环境并加载配置
+  // 导入并持久化配置文件
+  const importConfigFile = useCallback(
+    async (rawText: string): Promise<string> => {
+      console.log('[useSingboxConfig] 准备校验并导入用户上传的配置...');
+      // 前端先行做一遍 JSON 校验
+      let parsedJson: any;
+      try {
+        parsedJson = JSON.parse(rawText);
+      } catch (err: any) {
+        throw new Error(`文件不是合法的 JSON 格式: ${err.message || String(err)}`);
+      }
+
+      // 通过 Tauri 持久化至固定区域 app_config_dir/config.json
+      try {
+        const savedFormatted = await invoke<string>('import_config_file', {
+          content: JSON.stringify(parsedJson, null, 2),
+        });
+        setConfigContent(savedFormatted);
+        // 重置/同步当前临时覆盖
+        syncRuntimeOverride(overridePort, overrideLogLevel);
+        return savedFormatted;
+      } catch (err: any) {
+        throw new Error(String(err));
+      }
+    },
+    [overridePort, overrideLogLevel, syncRuntimeOverride]
+  );
+
+  // 导入可执行内核
+  const importBinaryFile = useCallback(
+    async (base64Data: string): Promise<BinaryStatusInfo> => {
+      console.log('[useSingboxConfig] 准备导入可执行文件...');
+      try {
+        const res = await invoke<BinaryStatusInfo>('import_binary_file', {
+          base64Content: base64Data,
+        });
+        setBinaryStatus(res);
+        setBinaryPath(res.binary_path);
+        return res;
+      } catch (err: any) {
+        throw new Error(String(err));
+      }
+    },
+    []
+  );
+
+  const handleAutoDetect = useCallback(async () => {
+    try {
+      const result = await invoke<EnvDetectionResult>('detect_environment', {
+        defaultBinary: defaultBinaryName,
+        defaultConfig: configPath || 'config.json',
+      });
+      if (result.binary_found) {
+        setBinaryPath(result.binary_path);
+      }
+      await checkBinaryStatus();
+      await loadConfig();
+      return result;
+    } catch {
+      await checkBinaryStatus();
+      await loadConfig();
+      return null;
+    }
+  }, [defaultBinaryName, configPath, checkBinaryStatus, loadConfig]);
+
+  // 组件挂载时自动加载配置、检测二进制并同步覆盖状态
   useEffect(() => {
-    handleAutoDetect();
-  }, [handleAutoDetect]);
+    loadConfig();
+    checkBinaryStatus();
+    if (overridePort !== null || overrideLogLevel !== null) {
+      syncRuntimeOverride(overridePort, overrideLogLevel);
+    }
+  }, [loadConfig, checkBinaryStatus, overridePort, overrideLogLevel, syncRuntimeOverride]);
 
   // 监听后端 sing-box 进程退出事件
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     const setupListener = async () => {
       try {
-        console.log('[useSingboxConfig] 注册 process-stopped 事件监听器...');
         unlisten = await listen('process-stopped', () => {
-          console.log('[useSingboxConfig] 收到 process-stopped 事件，将运行状态重置为 stopped');
           setRunningMode('stopped');
         });
       } catch (err) {
-        console.warn('[useSingboxConfig] 注册 process-stopped 监听器失败 (非 Tauri 环境忽略):', err);
+        console.warn('[useSingboxConfig] 注册 process-stopped 监听器失败:', err);
       }
     };
     setupListener();
@@ -127,5 +321,21 @@ export function useSingboxConfig(): UseSingboxConfigReturn {
     isLoadingConfig,
     loadConfig,
     handleAutoDetect,
+    binaryStatus,
+    checkBinaryStatus,
+    importConfigFile,
+    importBinaryFile,
+    originalPort,
+    originalLogLevel,
+    overridePort,
+    overrideLogLevel,
+    effectivePort,
+    effectiveLogLevel,
+    isPortOverridden,
+    isLogLevelOverridden,
+    setOverridePort,
+    revertPort,
+    setOverrideLogLevel,
+    revertLogLevel,
   };
 }

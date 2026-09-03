@@ -13,35 +13,35 @@ export const LogLine: React.FC<LogLineProps> = ({ log, lineNumber }) => {
   const isSuccess = log.level === 'success';
   const isDebug = log.level === 'debug' || log.level === 'trace';
 
-  // 颜色映射 (适配暗色终端风格)
-  let levelColor = '#58a6ff'; // INFO 亮蓝
-  let levelBg = 'rgba(56, 139, 253, 0.15)';
-  let levelBorder = 'rgba(56, 139, 253, 0.3)';
+  // 颜色映射 (适配白底终端风格，保障可读性与 WCAG 2.1 高对比度)
+  let levelColor = '#0969da'; // INFO 亮蓝
+  let levelBg = 'rgba(9, 105, 218, 0.1)';
+  let levelBorder = 'rgba(9, 105, 218, 0.25)';
   let rowBg = 'transparent';
-  let textColor = '#e6edf3';
+  let textColor = '#1f2328';
 
   if (isError) {
-    levelColor = '#f85149'; // ERROR 危险红
-    levelBg = 'rgba(248, 81, 73, 0.2)';
-    levelBorder = 'rgba(248, 81, 73, 0.4)';
-    rowBg = 'rgba(248, 81, 73, 0.08)';
-    textColor = '#ff7b72';
+    levelColor = '#cf222e'; // ERROR 危险红
+    levelBg = 'rgba(207, 34, 46, 0.1)';
+    levelBorder = 'rgba(207, 34, 46, 0.25)';
+    rowBg = 'rgba(207, 34, 46, 0.04)';
+    textColor = '#cf222e';
   } else if (isWarn) {
-    levelColor = '#d29922'; // WARN 警告橙黄
-    levelBg = 'rgba(210, 153, 34, 0.2)';
-    levelBorder = 'rgba(210, 153, 34, 0.4)';
-    rowBg = 'rgba(210, 153, 34, 0.06)';
-    textColor = '#e3b341';
+    levelColor = '#9a6700'; // WARN 警告橙黄
+    levelBg = 'rgba(217, 153, 0, 0.12)';
+    levelBorder = 'rgba(217, 153, 0, 0.3)';
+    rowBg = 'rgba(217, 153, 0, 0.04)';
+    textColor = '#7d4e00';
   } else if (isSuccess) {
-    levelColor = '#3fb950'; // SUCCESS 成功绿
-    levelBg = 'rgba(63, 185, 80, 0.15)';
-    levelBorder = 'rgba(63, 185, 80, 0.3)';
-    textColor = '#56d364';
+    levelColor = '#1a7f37'; // SUCCESS 成功绿
+    levelBg = 'rgba(26, 127, 55, 0.1)';
+    levelBorder = 'rgba(26, 127, 55, 0.25)';
+    textColor = '#1a7f37';
   } else if (isDebug) {
-    levelColor = '#8b949e'; // DEBUG 沉着灰
-    levelBg = 'rgba(139, 148, 158, 0.15)';
-    levelBorder = 'rgba(139, 148, 158, 0.3)';
-    textColor = '#8b949e';
+    levelColor = '#57606a'; // DEBUG 沉着灰
+    levelBg = 'rgba(87, 96, 106, 0.1)';
+    levelBorder = 'rgba(87, 96, 106, 0.25)';
+    textColor = '#57606a';
   }
 
   return (
@@ -50,7 +50,7 @@ export const LogLine: React.FC<LogLineProps> = ({ log, lineNumber }) => {
         display: 'flex',
         alignItems: 'baseline',
         gap: '8px',
-        padding: '2px 6px',
+        padding: '3px 6px',
         borderRadius: '4px',
         backgroundColor: rowBg,
         fontFamily: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace',
@@ -58,14 +58,18 @@ export const LogLine: React.FC<LogLineProps> = ({ log, lineNumber }) => {
         lineHeight: 1.6,
         wordBreak: 'break-all',
         whiteSpace: 'pre-wrap',
-        borderLeft: isError ? '3px solid #f85149' : isWarn ? '3px solid #d29922' : '3px solid transparent',
+        borderLeft: isError
+          ? '3px solid #cf222e'
+          : isWarn
+          ? '3px solid #d29922'
+          : '3px solid transparent',
       }}
     >
       {/* 行号 */}
       <span
         style={{
           userSelect: 'none',
-          color: '#484f58',
+          color: '#8c959f',
           minWidth: '40px',
           textAlign: 'right',
           flexShrink: 0,
@@ -95,13 +99,13 @@ export const LogLine: React.FC<LogLineProps> = ({ log, lineNumber }) => {
             >
               {log.level.toUpperCase()}
             </span>
-            <span style={{ color: '#7d8590', marginRight: '6px' }}>[{log.tag}]</span>
+            <span style={{ color: '#57606a', marginRight: '6px' }}>[{log.tag}]</span>
             {log.timing && (
               <span
                 style={{
-                  color: '#a371f7',
+                  color: '#8250df',
                   marginRight: '8px',
-                  backgroundColor: 'rgba(163, 113, 247, 0.1)',
+                  backgroundColor: 'rgba(130, 80, 223, 0.1)',
                   padding: '1px 4px',
                   borderRadius: '3px',
                 }}
@@ -109,7 +113,7 @@ export const LogLine: React.FC<LogLineProps> = ({ log, lineNumber }) => {
                 [{log.timing}]
               </span>
             )}
-            <span>{log.message}</span>
+            <span style={{ color: textColor }}>{log.message}</span>
           </>
         ) : (
           // 非 sing-box 标准单行文本
@@ -132,7 +136,7 @@ export const LogLine: React.FC<LogLineProps> = ({ log, lineNumber }) => {
                 {log.level.toUpperCase()}
               </span>
             )}
-            <span>{log.message || log.raw}</span>
+            <span style={{ color: textColor }}>{log.message || log.raw}</span>
           </>
         )}
       </div>

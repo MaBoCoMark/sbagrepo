@@ -19,6 +19,7 @@ declare namespace React {
   export type ButtonHTMLAttributes<T> = Record<string, any>;
   export type InputHTMLAttributes<T> = Record<string, any>;
   export type SelectHTMLAttributes<T> = Record<string, any>;
+  export type OptionHTMLAttributes<T> = Record<string, any>;
   export type AnchorHTMLAttributes<T> = Record<string, any>;
   export type SVGProps<T> = Record<string, any>;
   export type SVGAttributes<T> = Record<string, any>;
@@ -117,6 +118,7 @@ declare module '@primer/react' {
     monospace?: boolean;
   }
   export const TextInput: React.ForwardRefExoticComponent<TextInputProps & React.RefAttributes<HTMLInputElement>>;
+
   export interface BannerProps extends React.HTMLAttributes<HTMLDivElement> {
     title?: React.ReactNode;
     description?: React.ReactNode;
@@ -156,6 +158,39 @@ declare module '@primer/react' {
   export const UnderlineNav: React.FC<UnderlineNavProps> & {
     Item: React.FC<UnderlineNavItemProps>;
   };
+
+  export interface FormControlProps extends React.HTMLAttributes<HTMLDivElement> {
+    children?: React.ReactNode;
+    disabled?: boolean;
+    required?: boolean;
+  }
+  export interface FormControlLabelProps extends React.HTMLAttributes<HTMLLabelElement> {
+    children?: React.ReactNode;
+    htmlFor?: string;
+    visuallyHidden?: boolean;
+  }
+  export interface FormControlCaptionProps extends React.HTMLAttributes<HTMLSpanElement> {
+    children?: React.ReactNode;
+  }
+  export const FormControl: React.FC<FormControlProps> & {
+    Label: React.FC<FormControlLabelProps>;
+    Caption: React.FC<FormControlCaptionProps>;
+  };
+
+  export interface SelectProps extends Omit<React.SelectHTMLAttributes<HTMLSelectElement>, 'size'> {
+    size?: 'small' | 'medium' | 'large';
+    block?: boolean;
+    children?: React.ReactNode;
+    value?: string | number;
+    onChange?: (e: any) => void;
+  }
+  export interface SelectOptionProps extends React.OptionHTMLAttributes<HTMLOptionElement> {
+    value: string | number;
+    children?: React.ReactNode;
+  }
+  export const Select: React.FC<SelectProps> & {
+    Option: React.FC<SelectOptionProps>;
+  };
 }
 
 declare module '@primer/octicons-react' {
@@ -178,6 +213,11 @@ declare module '@primer/octicons-react' {
   export const CopyIcon: Icon;
   export const DownloadIcon: Icon;
   export const FilterIcon: Icon;
+  export const KeyIcon: Icon;
+  export const UploadIcon: Icon;
+  export const LockIcon: Icon;
+  export const ShieldIcon: Icon;
+  export const CpuIcon: Icon;
 }
 
 declare module '*.css' {}

@@ -44,6 +44,65 @@ pub fn clean_ansi(input: &str) -> String {
     out
 }
 
+/// 零依赖 Base64 解码器
+pub fn base64_decode(input: &str) -> Result<Vec<u8>, String> {
+    // 自动剥离可能的 data URL 前缀，如 data:application/octet-stream;base64,
+    let content = if let Some(idx) = input.find(";base64,") {
+        &input[idx + 8..]
+    } else {
+        input
+    };
+
+    let clean: String = content.chars().filter(|c| !c.is_whitespace()).collect();
+    let mut out = Vec::new();
+    let chars: Vec<char> = clean.chars().collect();
+    let mut i = 0;
+
+    if chars.is_empty() {
+        return Ok(out);
+    }
+    if chars.len() % 4 != 0 {
+        return Err(format!("Base64 内容长度非 4 的倍数 (当前长度: {})", chars.len()));
+    }
+
+    while i < chars.len() {
+        let b0 = decode_b64_char(chars[i])?;
+        let b1 = decode_b64_char(chars[i + 1])?;
+        let b2 = if chars[i + 2] == '=' {
+            None
+        } else {
+            Some(decode_b64_char(chars[i + 2])?)
+        };
+        let b3 = if chars[i + 3] == '=' {
+            None
+        } else {
+            Some(decode_b64_char(chars[i + 3])?)
+        };
+
+        out.push((b0 << 2) | (b1 >> 4));
+        if let Some(c2) = b2 {
+            out.push(((b1 & 0x0f) << 4) | (c2 >> 2));
+            if let Some(c3) = b3 {
+                out.push(((c2 & 0x03) << 6) | c3);
+            }
+        }
+        i += 4;
+    }
+
+    Ok(out)
+}
+
+fn decode_b64_char(c: char) -> Result<u8, String> {
+    match c {
+        'A'..='Z' => Ok(c as u8 - b'A'),
+        'a'..='z' => Ok(c as u8 - b'a' + 26),
+        '0'..='9' => Ok(c as u8 - b'0' + 52),
+        '+' => Ok(62),
+        '/' => Ok(63),
+        _ => Err(format!("非法 Base64 字符: '{}'", c)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -56,5 +115,11 @@ mod tests {
             cleaned,
             "INFO[0024] [1580955111 428ms] outbound/vless[XF-🇭🇰 香港 02 [V]]: outbound connection to www.google.com:80"
         );
+    }
+
+    #[test]
+    fn test_base64_decode() {
+        let decoded = base64_decode("aGVsbG8=").unwrap();
+        assert_eq!(String::from_utf8(decoded).unwrap(), "hello");
     }
 }

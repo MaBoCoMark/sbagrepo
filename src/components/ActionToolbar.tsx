@@ -1,55 +1,158 @@
-import React, { useState } from 'react';
-import { Button, TextInput, Banner } from '@primer/react';
+import React, { useState, useRef } from 'react';
+import { Button, Banner, Label, Text } from '@primer/react';
 import {
   CheckIcon,
   PlayIcon,
   ShieldLockIcon,
   StopIcon,
-  GearIcon,
+  UploadIcon,
   FileCodeIcon,
-  SyncIcon,
+  CpuIcon,
 } from '@primer/octicons-react';
 import { invoke } from '@tauri-apps/api/core';
+import { BinaryStatusInfo, FeedbackState, RunningMode } from '../types/singbox';
 
 interface ActionToolbarProps {
   binaryPath: string;
-  setBinaryPath: (path: string) => void;
-  configPath: string;
-  setConfigPath: (path: string) => void;
-  runningMode: 'stopped' | 'normal' | 'admin';
-  setRunningMode: (mode: 'stopped' | 'normal' | 'admin') => void;
+  configPath?: string;
+  configContent: string;
+  runningMode: RunningMode;
+  setRunningMode: (mode: RunningMode) => void;
   onRefreshConfig: () => void;
-  onAutoDetect?: () => Promise<any>;
-}
-
-interface FeedbackState {
-  type: 'success' | 'critical' | 'info' | 'warning';
-  title: string;
-  message: string;
+  binaryStatus: BinaryStatusInfo | null;
+  onImportConfig: (text: string) => Promise<string>;
+  onImportBinary: (base64: string) => Promise<BinaryStatusInfo>;
 }
 
 export const ActionToolbar: React.FC<ActionToolbarProps> = ({
   binaryPath,
-  setBinaryPath,
-  configPath,
-  setConfigPath,
+  configContent,
   runningMode,
   setRunningMode,
   onRefreshConfig,
-  onAutoDetect,
+  binaryStatus,
+  onImportConfig,
+  onImportBinary,
 }) => {
   const [loadingAction, setLoadingAction] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<FeedbackState | null>(null);
 
+  const configFileRef = useRef<HTMLInputElement | null>(null);
+  const binaryFileRef = useRef<HTMLInputElement | null>(null);
+
+  // 检查当前配置是否为空白或未配置
+  const isConfigEmpty = !configContent || configContent.trim() === '' || configContent.trim() === '{}';
+  const isBinaryReady = binaryStatus ? binaryStatus.imported : Boolean(binaryPath);
+
+  // 处理配置文件上传导入
+  const handleConfigFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    console.log('[ActionToolbar] 用户选择配置文件:', file.name, '大小:', file.size);
+    setLoadingAction('import-config');
+
+    try {
+      // 1. 读取为纯文本
+      const text = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as string);
+        reader.onerror = () => reject(new Error('无法读取文件内容 (非有效文本或权限受限)'));
+        reader.readAsText(file, 'utf-8');
+      });
+
+      // 2. 验证是否为完整的 JSON 格式
+      let parsed: any;
+      try {
+        parsed = JSON.parse(text);
+      } catch (jsonErr: any) {
+        throw new Error(
+          `所选文件不是合法的完整 JSON 格式！\n解析异常: ${jsonErr.message || String(jsonErr)}`
+        );
+      }
+
+      if (typeof parsed !== 'object' || parsed === null) {
+        throw new Error('所选文件内容非有效 JSON 对象！');
+      }
+
+      // 3. 提交持久化存储至 app_config_dir/config.json
+      await onImportConfig(text);
+
+      setFeedback({
+        type: 'success',
+        title: '配置文件导入成功',
+        message: `文件 "${file.name}" 已通过 JSON 校验，并覆盖持久化至软件标准配置存储区 (config.json)。`,
+      });
+      onRefreshConfig();
+    } catch (err: any) {
+      console.error('[ActionToolbar] 导入配置文件失败:', err);
+      setFeedback({
+        type: 'critical',
+        title: '配置文件导入失败',
+        message: err.message || String(err),
+      });
+    } finally {
+      setLoadingAction(null);
+      if (configFileRef.current) {
+        configFileRef.current.value = '';
+      }
+    }
+  };
+
+  // 处理可执行内核二进制文件上传导入
+  const handleBinaryFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    console.log('[ActionToolbar] 用户选择内核文件:', file.name, '大小:', file.size);
+    setLoadingAction('import-binary');
+
+    try {
+      // 读取为 Base64
+      const base64String = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const res = reader.result as string;
+          // 剥离可能的 data URL 前缀
+          const commaIdx = res.indexOf(',');
+          resolve(commaIdx >= 0 ? res.slice(commaIdx + 1) : res);
+        };
+        reader.onerror = () => reject(new Error('读取二进制文件失败'));
+        reader.readAsDataURL(file);
+      });
+
+      const res = await onImportBinary(base64String);
+
+      setFeedback({
+        type: 'success',
+        title: 'sing-box 内核导入就绪',
+        message: `成功导入内核可执行文件 "${res.binary_name}" (${(file.size / 1024 / 1024).toFixed(
+          2
+        )} MB)。\n已写入应用专属存储区并自动配置可执行权限 (+x)。`,
+      });
+    } catch (err: any) {
+      console.error('[ActionToolbar] 导入内核失败:', err);
+      setFeedback({
+        type: 'critical',
+        title: '内核导入失败',
+        message: err.message || String(err),
+      });
+    } finally {
+      setLoadingAction(null);
+      if (binaryFileRef.current) {
+        binaryFileRef.current.value = '';
+      }
+    }
+  };
+
   const handleCheck = async () => {
-    console.log('[ActionToolbar] 开始检查配置语法...', { binaryPath, configPath });
+    console.log('[ActionToolbar] 开始检查配置语法...');
     setLoadingAction('check');
     try {
       const res = await invoke<string>('check_config', {
-        binaryPath,
-        configPath,
+        binaryPath: '',
+        configPath: '',
       });
-      console.log('[ActionToolbar] 配置检查通过:', res);
       setFeedback({
         type: 'success',
         title: '配置检查通过',
@@ -57,7 +160,6 @@ export const ActionToolbar: React.FC<ActionToolbarProps> = ({
       });
       onRefreshConfig();
     } catch (err: any) {
-      console.error('[ActionToolbar] 检查配置失败:', err);
       setFeedback({
         type: 'critical',
         title: '配置检查失败',
@@ -69,14 +171,13 @@ export const ActionToolbar: React.FC<ActionToolbarProps> = ({
   };
 
   const handleStartNormal = async () => {
-    console.log('[ActionToolbar] 正在以普通模式启动 sing-box...', { binaryPath, configPath });
+    console.log('[ActionToolbar] 正在以普通模式启动 sing-box...');
     setLoadingAction('normal');
     try {
       await invoke('start_normal', {
-        binaryPath,
-        configPath,
+        binaryPath: '',
+        configPath: '',
       });
-      console.log('[ActionToolbar] 普通模式启动成功');
       setRunningMode('normal');
       setFeedback({
         type: 'success',
@@ -84,7 +185,6 @@ export const ActionToolbar: React.FC<ActionToolbarProps> = ({
         message: 'sing-box 已经以普通用户权限成功拉起，实时日志已同步输出至看板。',
       });
     } catch (err: any) {
-      console.error('[ActionToolbar] 普通模式启动失败:', err);
       setFeedback({
         type: 'critical',
         title: '普通启动失败',
@@ -96,22 +196,20 @@ export const ActionToolbar: React.FC<ActionToolbarProps> = ({
   };
 
   const handleStartAdmin = async () => {
-    console.log('[ActionToolbar] 正在以管理员提权模式启动 sing-box...', { binaryPath, configPath });
+    console.log('[ActionToolbar] 正在以管理员提权模式启动 sing-box...');
     setLoadingAction('admin');
     try {
       const res = await invoke<string>('start_admin', {
-        binaryPath,
-        configPath,
+        binaryPath: '',
+        configPath: '',
       });
-      console.log('[ActionToolbar] 管理员提权启动成功:', res);
       setRunningMode('admin');
       setFeedback({
         type: 'success',
         title: '管理员提权启动成功',
-        message: res || '已通过系统认证以管理员权限启动 sing-box。',
+        message: res || '已通过系统原生认证窗口以特权权限拉起 sing-box。',
       });
     } catch (err: any) {
-      console.error('[ActionToolbar] 管理员提权启动失败:', err);
       setFeedback({
         type: 'critical',
         title: '管理员提权启动失败',
@@ -127,7 +225,6 @@ export const ActionToolbar: React.FC<ActionToolbarProps> = ({
     setLoadingAction('stop');
     try {
       const res = await invoke<string>('stop_process');
-      console.log('[ActionToolbar] 进程终止结果:', res);
       setRunningMode('stopped');
       setFeedback({
         type: 'info',
@@ -135,55 +232,9 @@ export const ActionToolbar: React.FC<ActionToolbarProps> = ({
         message: res || 'sing-box 后台进程已安全停止。',
       });
     } catch (err: any) {
-      console.error('[ActionToolbar] 终止进程失败:', err);
       setFeedback({
         type: 'critical',
         title: '终止进程异常',
-        message: String(err),
-      });
-    } finally {
-      setLoadingAction(null);
-    }
-  };
-
-  const handleAutoDetectClick = async () => {
-    if (!onAutoDetect) return;
-    console.log('[ActionToolbar] 用户点击自动检测路径');
-    setLoadingAction('detect');
-    try {
-      const res = await onAutoDetect();
-      if (res) {
-        if (res.binary_found && res.config_found) {
-          setFeedback({
-            type: 'success',
-            title: '路径自动检测完成',
-            message: `成功检测到现有文件：\n• 可执行文件: ${res.binary_path}\n• 配置文件: ${res.config_path}`,
-          });
-        } else if (!res.binary_found && !res.config_found) {
-          setFeedback({
-            type: 'warning',
-            title: '未检测到默认文件',
-            message: `在系统 PATH、常见目录及项目预设路径中未找到 sing-box 或 config.json。\n请手动在上方输入框填入路径。\n当前工作目录 (CWD): ${res.cwd}`,
-          });
-        } else if (!res.binary_found) {
-          setFeedback({
-            type: 'warning',
-            title: '未检测到 sing-box 可执行文件',
-            message: `配置文件已找到: ${res.config_path}\n但未在系统中找到 sing-box 可执行文件。请在输入框中填入其绝对路径。`,
-          });
-        } else {
-          setFeedback({
-            type: 'warning',
-            title: '未检测到配置文件',
-            message: `sing-box 已找到: ${res.binary_path}\n但未找到 config.json 配置文件。请确认文件是否存在。`,
-          });
-        }
-      }
-    } catch (err: any) {
-      console.error('[ActionToolbar] 自动检测失败:', err);
-      setFeedback({
-        type: 'critical',
-        title: '自动检测异常',
         message: String(err),
       });
     } finally {
@@ -203,62 +254,148 @@ export const ActionToolbar: React.FC<ActionToolbarProps> = ({
         border: '1px solid var(--border-default, #d0d7de)',
       }}
     >
+      {/* 隐藏的真实文件选择器 */}
+      <input
+        type="file"
+        ref={configFileRef}
+        onChange={handleConfigFileChange}
+        style={{ display: 'none' }}
+        accept=".json,application/json,text/*"
+      />
+      <input
+        type="file"
+        ref={binaryFileRef}
+        onChange={handleBinaryFileChange}
+        style={{ display: 'none' }}
+      />
+
+      {/* 核心文件管理区域 (不再需要手动计算或填写路径) */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
-        <div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
-            <label
+        {/* 配置文件状态与导入 */}
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            padding: '12px 16px',
+            backgroundColor: 'var(--bg-canvas, #ffffff)',
+            borderRadius: '6px',
+            border: '1px solid var(--border-default, #d0d7de)',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <div
               style={{
-                fontSize: '12px',
-                fontWeight: 600,
-                color: 'var(--fg-muted, #656d76)',
+                width: '36px',
+                height: '36px',
+                borderRadius: '6px',
+                backgroundColor: 'var(--color-accent-subtle, #ddf4ff)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
               }}
             >
-              sing-box 可执行文件路径 (Binary Path)
-            </label>
-            {onAutoDetect && (
-              <Button
-                variant="invisible"
-                size="small"
-                leadingVisual={SyncIcon}
-                onClick={handleAutoDetectClick}
-                disabled={loadingAction !== null}
-                style={{ padding: '0 4px', fontSize: '11px', height: '20px' }}
-              >
-                自动检测
-              </Button>
-            )}
+              <FileCodeIcon size={20} fill="var(--color-accent-fg, #0969da)" />
+            </div>
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <Text style={{ fontSize: '13px', fontWeight: 600 }}>配置文件 (config.json)</Text>
+                {isConfigEmpty ? (
+                  <Label variant="attention" size="small">
+                    空配置 ({'{}'})
+                  </Label>
+                ) : (
+                  <Label variant="success" size="small">
+                    已就绪
+                  </Label>
+                )}
+              </div>
+              <Text as="p" style={{ fontSize: '11px', color: 'var(--fg-muted, #656d76)', margin: 0 }}>
+                存储于系统标准应用目录 (无需手动指定绝对路径)
+              </Text>
+            </div>
           </div>
-          <TextInput
-            leadingVisual={GearIcon}
-            value={binaryPath}
-            onChange={(e: any) => setBinaryPath(e.target.value)}
-            aria-label="Binary Path"
-            block
-          />
+
+          <Button
+            variant="default"
+            size="small"
+            leadingVisual={UploadIcon}
+            onClick={() => configFileRef.current?.click()}
+            loading={loadingAction === 'import-config'}
+            disabled={loadingAction !== null}
+          >
+            导入配置文件
+          </Button>
         </div>
 
-        <div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
-            <label
+        {/* 可执行内核状态与导入 */}
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            padding: '12px 16px',
+            backgroundColor: 'var(--bg-canvas, #ffffff)',
+            borderRadius: '6px',
+            border: '1px solid var(--border-default, #d0d7de)',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <div
               style={{
-                fontSize: '12px',
-                fontWeight: 600,
-                color: 'var(--fg-muted, #656d76)',
+                width: '36px',
+                height: '36px',
+                borderRadius: '6px',
+                backgroundColor: isBinaryReady
+                  ? 'rgba(46, 160, 67, 0.15)'
+                  : 'rgba(217, 153, 0, 0.15)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
               }}
             >
-              配置文件路径 (Config Path)
-            </label>
+              <CpuIcon
+                size={20}
+                fill={isBinaryReady ? 'var(--color-success, #1a7f37)' : 'var(--color-warning, #9a6700)'}
+              />
+            </div>
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <Text style={{ fontSize: '13px', fontWeight: 600 }}>
+                  {binaryStatus?.binary_name || 'sing-box 内核'}
+                </Text>
+                {isBinaryReady ? (
+                  <Label variant="success" size="small">
+                    已导入
+                  </Label>
+                ) : (
+                  <Label variant="attention" size="small">
+                    未导入
+                  </Label>
+                )}
+              </div>
+              <Text as="p" style={{ fontSize: '11px', color: 'var(--fg-muted, #656d76)', margin: 0 }}>
+                {isBinaryReady
+                  ? '存放于专属应用目录 (自动 chmod +x)'
+                  : '请上传适用于当前系统架构的 sing-box 二进制文件'}
+              </Text>
+            </div>
           </div>
-          <TextInput
-            leadingVisual={FileCodeIcon}
-            value={configPath}
-            onChange={(e: any) => setConfigPath(e.target.value)}
-            aria-label="Config Path"
-            block
-          />
+
+          <Button
+            variant="default"
+            size="small"
+            leadingVisual={UploadIcon}
+            onClick={() => binaryFileRef.current?.click()}
+            loading={loadingAction === 'import-binary'}
+            disabled={loadingAction !== null}
+          >
+            导入内核文件
+          </Button>
         </div>
       </div>
 
+      {/* 控制操作按钮组 */}
       <div
         style={{
           display: 'flex',
@@ -275,7 +412,7 @@ export const ActionToolbar: React.FC<ActionToolbarProps> = ({
             variant="default"
             leadingVisual={CheckIcon}
             onClick={handleCheck}
-            disabled={loadingAction !== null}
+            disabled={loadingAction !== null || !isBinaryReady}
             loading={loadingAction === 'check'}
           >
             检查语法
@@ -285,7 +422,7 @@ export const ActionToolbar: React.FC<ActionToolbarProps> = ({
             variant="primary"
             leadingVisual={PlayIcon}
             onClick={handleStartNormal}
-            disabled={loadingAction !== null || runningMode !== 'stopped'}
+            disabled={loadingAction !== null || runningMode !== 'stopped' || !isBinaryReady}
             loading={loadingAction === 'normal'}
           >
             普通运行
@@ -295,7 +432,7 @@ export const ActionToolbar: React.FC<ActionToolbarProps> = ({
             variant="danger"
             leadingVisual={ShieldLockIcon}
             onClick={handleStartAdmin}
-            disabled={loadingAction !== null || runningMode !== 'stopped'}
+            disabled={loadingAction !== null || runningMode !== 'stopped' || !isBinaryReady}
             loading={loadingAction === 'admin'}
           >
             管理员提权运行

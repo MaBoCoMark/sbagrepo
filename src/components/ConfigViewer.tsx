@@ -3,28 +3,33 @@ import { Heading, Text, Button, Banner } from '@primer/react';
 import { SyncIcon, FileCodeIcon } from '@primer/octicons-react';
 
 interface ConfigViewerProps {
-  configPath: string;
+  configPath?: string;
   configContent: string;
   onReload: () => void;
   isLoading: boolean;
 }
 
 export const ConfigViewer: React.FC<ConfigViewerProps> = ({
-  configPath,
+  configPath: _configPath,
   configContent,
   onReload,
   isLoading,
 }) => {
   let formattedJson = configContent;
-  try {
-    if (configContent.trim()) {
-      formattedJson = JSON.stringify(JSON.parse(configContent), null, 2);
+  const trimmed = (configContent || '').trim();
+
+  if (!trimmed) {
+    formattedJson = '{\n}\n';
+  } else {
+    try {
+      formattedJson = JSON.stringify(JSON.parse(trimmed), null, 2);
+    } catch {
+      formattedJson = trimmed;
     }
-  } catch {
-    formattedJson = configContent;
   }
 
-  const lineCount = formattedJson ? formattedJson.split('\n').length : 0;
+  const lineCount = formattedJson ? formattedJson.split('\n').length : 1;
+  const isDefaultEmpty = !trimmed || trimmed === '{}' || trimmed === '{\n}';
 
   return (
     <div
@@ -53,7 +58,7 @@ export const ConfigViewer: React.FC<ConfigViewerProps> = ({
             配置文件查看器 (Config Viewer)
           </Heading>
           <Text as="span" style={{ fontSize: '12px', color: 'var(--fg-muted, #656d76)' }}>
-            ({lineCount} 行 · {configPath})
+            ({lineCount} 行 · 应用标准存储区 config.json)
           </Text>
         </div>
 
@@ -68,11 +73,19 @@ export const ConfigViewer: React.FC<ConfigViewerProps> = ({
         </Button>
       </div>
 
-      <Banner
-        variant="info"
-        title="只读模式提示"
-        description="当前 MVP 版本暂不支持在软件内直接编辑配置文件。请使用第三方专业编辑器（如 VS Code、Sublime Text）修改您的 config.json，保存后点击右上角【重新加载】。"
-      />
+      {isDefaultEmpty ? (
+        <Banner
+          variant="info"
+          title="当前配置为空白默认文件"
+          description="应用检测到当前配置存储区为空，已自动生成空白 JSON ({})。您可以通过上方【导入配置文件】功能直接上传完整的 sing-box 配置文件覆盖此处。"
+        />
+      ) : (
+        <Banner
+          variant="info"
+          title="只读模式提示"
+          description="当前版本直接查看应用专属目录下的固定 config.json 文件。如需更换配置，直接点击上方【导入配置文件】上传新配置即可覆盖。"
+        />
+      )}
 
       <div
         style={{
@@ -96,7 +109,7 @@ export const ConfigViewer: React.FC<ConfigViewerProps> = ({
             wordBreak: 'normal',
           }}
         >
-          <code>{formattedJson || '// 配置文件为空或未加载'}</code>
+          <code>{formattedJson}</code>
         </pre>
       </div>
     </div>

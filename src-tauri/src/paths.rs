@@ -1,7 +1,100 @@
 use std::path::{Path, PathBuf};
+use tauri::Manager;
+
+/// 获取平台标准 sing-box 二进制文件名
+pub fn get_platform_binary_name() -> &'static str {
+    #[cfg(target_os = "macos")]
+    {
+        #[cfg(target_arch = "aarch64")]
+        return "sing-box-aarch64-apple-darwin";
+        #[cfg(not(target_arch = "aarch64"))]
+        return "sing-box-x86_64-apple-darwin";
+    }
+    #[cfg(target_os = "windows")]
+    {
+        return "sing-box-x86_64-pc-windows-msvc.exe";
+    }
+    #[cfg(target_os = "linux")]
+    {
+        #[cfg(target_arch = "aarch64")]
+        return "sing-box-aarch64-unknown-linux-gnu";
+        #[cfg(not(target_arch = "aarch64"))]
+        return "sing-box-x86_64-unknown-linux-gnu";
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    {
+        return "sing-box";
+    }
+}
+
+/// 获取跨平台统一的 Tauri 应用配置目录 (app_config_dir)
+/// Windows: %APPDATA%\com.singbox.desktop\
+/// macOS: ~/Library/Application Support/com.singbox.desktop/
+/// Linux: ~/.config/com.singbox.desktop/
+pub fn get_app_config_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|e| format!("获取系统应用配置目录失败: {}", e))?;
+
+    if !dir.exists() {
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| format!("创建应用配置目录失败 ({:?}): {}", dir, e))?;
+    }
+    Ok(dir)
+}
+
+/// 获取固定位置的配置文件路径 (app_config_dir/config.json)
+pub fn get_app_config_file_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let config_dir = get_app_config_dir(app)?;
+    Ok(config_dir.join("config.json"))
+}
+
+/// 获取临时运行时配置文件路径 (用于端口/日志临时覆盖，保证原始 config.json 纯净)
+pub fn get_app_runtime_config_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let config_dir = get_app_config_dir(app)?;
+    Ok(config_dir.join("runtime_config.json"))
+}
+
+/// 获取用户导入的可执行文件存放路径
+pub fn get_app_binary_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let config_dir = get_app_config_dir(app)?;
+    let binary_name = get_platform_binary_name();
+
+    // 优先返回 binaries/ 子目录中的文件（如果存在）
+    let in_binaries = config_dir.join("binaries").join(binary_name);
+    if in_binaries.is_file() {
+        return Ok(in_binaries);
+    }
+
+    // 根目录中的文件（如果存在）
+    let in_root = config_dir.join(binary_name);
+    if in_root.is_file() {
+        return Ok(in_root);
+    }
+
+    // 默认存放到 binaries/ 子目录
+    let binaries_dir = config_dir.join("binaries");
+    if !binaries_dir.exists() {
+        let _ = std::fs::create_dir_all(&binaries_dir);
+    }
+    Ok(binaries_dir.join(binary_name))
+}
+
+/// 获取 MITM CA 根证书存放路径 (app_config_dir/ca.crt)
+pub fn get_app_ca_cert_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let config_dir = get_app_config_dir(app)?;
+    Ok(config_dir.join("ca.crt"))
+}
+
+/// 获取 MITM CA 私钥存放路径 (app_config_dir/ca.key)
+pub fn get_app_ca_key_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let config_dir = get_app_config_dir(app)?;
+    Ok(config_dir.join("ca.key"))
+}
 
 /// 智能解析 sing-box 可执行文件路径
-pub fn resolve_binary(input: &str) -> Result<PathBuf, String> {
+pub fn resolve_binary(input: &str, app: Option<&tauri::AppHandle>) -> Result<PathBuf, String> {
     let trimmed = input.trim();
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let mut attempted_paths: Vec<PathBuf> = Vec::new();
@@ -23,6 +116,15 @@ pub fn resolve_binary(input: &str) -> Result<PathBuf, String> {
             None
         }
     };
+
+    // 0. 优先在 Tauri 的 app_config_dir 区域中寻找用户导入的可执行文件
+    if let Some(app_handle) = app {
+        if let Ok(app_bin) = get_app_binary_path(app_handle) {
+            if app_bin.is_file() {
+                return post_process_binary(app_bin);
+            }
+        }
+    }
 
     if !trimmed.is_empty() {
         let input_path = PathBuf::from(trimmed);
@@ -60,6 +162,7 @@ pub fn resolve_binary(input: &str) -> Result<PathBuf, String> {
 
     // 5. 查找标准命名候选文件
     let candidate_names = [
+        get_platform_binary_name(),
         "sing-box",
         "sing-box.exe",
         "sing-box-aarch64-apple-darwin",
@@ -143,19 +246,18 @@ pub fn resolve_binary(input: &str) -> Result<PathBuf, String> {
         .collect::<Vec<_>>()
         .join("\n");
 
+    let expected_name = get_platform_binary_name();
     let err_msg = format!(
         "无法找到 sing-box 可执行文件！(No such file or directory)\n\
-        输入路径: \"{}\"\n\
+        当前平台所需可执行文件: \"{}\"\n\
         当前工作目录: \"{}\"\n\
         已尝试查找位置:\n{}\n\
         \n\
-        排查建议:\n\
-        1. 请确认已下载安装 sing-box，并在上方输入框中填写其绝对路径（例如 macOS 通常为 /opt/homebrew/bin/sing-box，Windows 如 C:\\Program Files\\sing-box\\sing-box.exe）；\n\
-        2. 若使用 Sidecar，请确保可执行文件存放于 binaries/ 或 src-tauri/binaries/ 目录下；\n\
-        3. Unix 系统请确保该文件具有可执行权限 (chmod +x <路径>)。",
-        input,
+        请使用上方【导入内核文件】功能直接上传适用于您平台的 {} 可执行程序。",
+        expected_name,
         cwd.display(),
-        if attempted_str.is_empty() { "  • (无有效候选路径)".to_string() } else { attempted_str }
+        if attempted_str.is_empty() { "  • (无有效候选路径)".to_string() } else { attempted_str },
+        expected_name
     );
 
     Err(err_msg)
@@ -182,7 +284,7 @@ pub fn post_process_binary(path: PathBuf) -> Result<PathBuf, String> {
 }
 
 /// 智能解析配置文件路径
-pub fn resolve_config(input: &str) -> Result<PathBuf, String> {
+pub fn resolve_config(input: &str, app: Option<&tauri::AppHandle>) -> Result<PathBuf, String> {
     let trimmed = input.trim();
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let mut attempted_paths: Vec<PathBuf> = Vec::new();
@@ -204,6 +306,24 @@ pub fn resolve_config(input: &str) -> Result<PathBuf, String> {
             None
         }
     };
+
+    // 0. 如果有临时生成的运行时配置 (runtime_config.json)，在运行/检查时优先检测
+    if let Some(app_handle) = app {
+        if trimmed.is_empty() || trimmed == "config.json" {
+            // 优先检查 runtime_config.json
+            if let Ok(runtime_path) = get_app_runtime_config_path(app_handle) {
+                if runtime_path.is_file() {
+                    return Ok(runtime_path);
+                }
+            }
+            // 其次检查 app_config_dir/config.json
+            if let Ok(app_cfg) = get_app_config_file_path(app_handle) {
+                if app_cfg.is_file() {
+                    return Ok(app_cfg);
+                }
+            }
+        }
+    }
 
     let target_name = if trimmed.is_empty() {
         "config.json"
@@ -250,9 +370,7 @@ pub fn resolve_config(input: &str) -> Result<PathBuf, String> {
         当前工作目录: \"{}\"\n\
         已尝试查找位置:\n{}\n\
         \n\
-        排查建议:\n\
-        1. 请确认配置文件是否存在，并在输入框中填入正确的绝对路径或有效相对路径；\n\
-        2. 请确认项目根目录下是否存在 config.json。",
+        建议使用【导入配置文件】功能上传您的 JSON 配置文件。",
         input,
         cwd.display(),
         attempted_str

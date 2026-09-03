@@ -21,7 +21,7 @@ pub async fn start_normal(
         binary_path, config_path
     );
 
-    let resolved_binary = match resolve_binary(&binary_path) {
+    let resolved_binary = match resolve_binary(&binary_path, Some(&app)) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("[singbox-desktop][start_normal] 错误: {}", e);
@@ -30,7 +30,7 @@ pub async fn start_normal(
         }
     };
 
-    let resolved_config = match resolve_config(&config_path) {
+    let resolved_config = match resolve_config(&config_path, Some(&app)) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("[singbox-desktop][start_normal] 错误: {}", e);
@@ -158,7 +158,7 @@ pub fn start_admin(
         binary_path, config_path
     );
 
-    let resolved_binary = match resolve_binary(&binary_path) {
+    let resolved_binary = match resolve_binary(&binary_path, Some(&app)) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("[singbox-desktop][start_admin] 错误: {}", e);
@@ -167,7 +167,7 @@ pub fn start_admin(
         }
     };
 
-    let resolved_config = match resolve_config(&config_path) {
+    let resolved_config = match resolve_config(&config_path, Some(&app)) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("[singbox-desktop][start_admin] 错误: {}", e);
