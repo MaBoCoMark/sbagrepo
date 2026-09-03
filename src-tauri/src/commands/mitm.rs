@@ -132,8 +132,12 @@ impl hudsucker::HttpHandler for MitmHandler {
     async fn handle_request(
         &mut self,
         _ctx: &hudsucker::HttpContext,
-        _req: hudsucker::hyper::Request<hudsucker::Body>,
+        req: hudsucker::hyper::Request<hudsucker::Body>,
     ) -> hudsucker::RequestOrResponse {
+        // CONNECT 请求用于建立 TCP/TLS 隧道，必须放行交由 Hudsucker 执行 TLS 握手与证书签发，绝不能拦截并返回普通 HTTP 响应
+        if req.method() == hudsucker::hyper::Method::CONNECT {
+            return hudsucker::RequestOrResponse::Request(req);
+        }
         let rand_num = rand::random::<u32>() % 100000;
         let log_msg = format!("[singbox-desktop][MITM] 拦截到请求，分配随机数字: {}", rand_num);
         println!("{}", log_msg);
