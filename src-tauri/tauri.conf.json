@@ -1,27 +1,28 @@
 {
-  "productName": "rl-tactical-overlay",
-  "version": "0.1.0",
-  "identifier": "com.cartrider.rl-tactical-overlay",
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "singbox-desktop",
+  "version": "1.0.0",
+  "identifier": "com.singbox.desktop",
   "build": {
-    "beforeDevCommand": "pnpm dev",
+    "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "pnpm build",
+    "beforeBuildCommand": "npm run build",
     "frontendDist": "../dist"
   },
   "app": {
     "windows": [
       {
-        "label": "overlay",
-        "url": "overlay.html",
-        "width": 800,
-        "height": 200,
-        "maximized": false,
+        "label": "main",
+        "title": "sing-box Desktop",
+        "url": "index.html",
+        "width": 1000,
+        "height": 720,
+        "minWidth": 800,
+        "minHeight": 600,
         "resizable": true,
         "decorations": true,
-        "transparent": true,
-        "alwaysOnTop": true,
-        "focus": false,
-        "skipTaskbar": true
+        "transparent": false,
+        "center": true
       }
     ],
     "security": {
@@ -35,6 +36,9 @@
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/icon.ico"
+    ],
+    "externalBin": [
+      "binaries/sing-box"
     ]
   }
 }

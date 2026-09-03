@@ -1,29 +1,12 @@
 import { defineConfig } from "vite";
-import { resolve } from "path";
-import { fileURLToPath } from "url";
-import path from "path";
-import yaml from "@rollup/plugin-yaml";
-
-// Define __dirname for ES Modules
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+import react from "@vitejs/plugin-react";
 
 export default defineConfig({
-  plugins: [
-    yaml()
-  ],
-  build: {
-    rollupOptions: {
-      input: {
-        configurator: resolve(__dirname, "configurator.html"),
-        overlay: resolve(__dirname, "overlay.html"),
-      },
-    },
-  },
+  plugins: [react()],
+  clearScreen: false,
   server: {
     port: 1420,
     strictPort: true,
-    // Add this to help Vite handle the HMR for Tauri
     watch: {
       ignored: ["**/src-tauri/**"],
     },
