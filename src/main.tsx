@@ -1,18 +1,13 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
+import { setupGlobalErrorHandlers } from './utils/bootstrap';
 import './index.css';
 
-console.log('[singbox-desktop] Webview UI initialized.');
+// 初始化全局异常捕获
+setupGlobalErrorHandlers();
 
-window.addEventListener('error', (event) => {
-  console.error('[singbox-desktop][Webview Error]', event.error || event.message, event);
-});
-
-window.addEventListener('unhandledrejection', (event) => {
-  console.error('[singbox-desktop][Webview Unhandled Rejection]', event.reason);
-});
-
+// 挂载 React 根节点
 ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
   <React.StrictMode>
     <App />

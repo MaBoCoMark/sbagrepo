@@ -12,12 +12,13 @@ declare namespace React {
   export type ElementType = any;
   export type FC<P = {}> = (props: P) => any;
   export type ComponentType<P = {}> = any;
-  export type RefObject<T> = { current: T | null };
+  export type RefObject<T> = { current: T };
   export type Dispatch<A> = (value: A) => void;
   export type SetStateAction<S> = S | ((prevState: S) => S);
   export type HTMLAttributes<T> = Record<string, any>;
   export type ButtonHTMLAttributes<T> = Record<string, any>;
   export type InputHTMLAttributes<T> = Record<string, any>;
+  export type SelectHTMLAttributes<T> = Record<string, any>;
   export type AnchorHTMLAttributes<T> = Record<string, any>;
   export type SVGProps<T> = Record<string, any>;
   export type SVGAttributes<T> = Record<string, any>;
@@ -30,7 +31,7 @@ declare namespace React {
   export function useEffect(effect: () => void | (() => void), deps?: any[]): void;
   export function useCallback<T extends (...args: any[]) => any>(callback: T, deps: any[]): T;
   export function useMemo<T>(factory: () => T, deps: any[]): T;
-  export function useRef<T>(initialValue: T | null): RefObject<T>;
+  export function useRef<T>(initialValue: T): RefObject<T>;
   export function useRef<T = undefined>(): RefObject<T | undefined>;
 
   export const StrictMode: FC<{ children?: ReactNode }>;
@@ -116,7 +117,6 @@ declare module '@primer/react' {
     monospace?: boolean;
   }
   export const TextInput: React.ForwardRefExoticComponent<TextInputProps & React.RefAttributes<HTMLInputElement>>;
-
   export interface BannerProps extends React.HTMLAttributes<HTMLDivElement> {
     title?: React.ReactNode;
     description?: React.ReactNode;
@@ -176,6 +176,8 @@ declare module '@primer/octicons-react' {
   export const FileCodeIcon: Icon;
   export const TrashIcon: Icon;
   export const CopyIcon: Icon;
+  export const DownloadIcon: Icon;
+  export const FilterIcon: Icon;
 }
 
 declare module '*.css' {}
