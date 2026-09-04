@@ -191,6 +191,39 @@ declare module '@primer/react' {
   export const Select: React.FC<SelectProps> & {
     Option: React.FC<SelectOptionProps>;
   };
+
+  // Primer React ProgressBar component
+  export interface ProgressBarProps extends React.HTMLAttributes<HTMLDivElement> {
+    'aria-valuenow'?: number;
+    'aria-valuemin'?: number;
+    'aria-valuemax'?: number;
+    'aria-label'?: string;
+    progress?: number;
+    size?: 'small' | 'medium' | 'large';
+    style?: React.HTMLAttributes<HTMLDivElement>['style'];
+    children?: React.ReactNode;
+  }
+  export interface ProgressBarItemProps extends React.HTMLAttributes<HTMLSpanElement> {
+    progress?: number;
+    style?: React.HTMLAttributes<HTMLSpanElement>['style'];
+    'aria-label'?: string;
+  }
+  export const ProgressBar: React.FC<ProgressBarProps> & {
+    Item: React.FC<ProgressBarItemProps>;
+  };
+
+  // Primer React Stack component
+  export interface StackProps extends React.HTMLAttributes<HTMLDivElement> {
+    direction?: 'horizontal' | 'vertical';
+    gap?: 'none' | 'condensed' | 'normal' | 'spacious' | number;
+    align?: 'start' | 'center' | 'end' | 'baseline' | 'stretch';
+    justify?: 'start' | 'center' | 'end' | 'space-between' | 'space-around' | 'space-evenly';
+    wrap?: 'wrap' | 'nowrap';
+    role?: string;
+    style?: React.HTMLAttributes<HTMLDivElement>['style'];
+    children?: React.ReactNode;
+  }
+  export const Stack: React.FC<StackProps>;
 }
 
 declare module '@primer/octicons-react' {
@@ -218,6 +251,16 @@ declare module '@primer/octicons-react' {
   export const LockIcon: Icon;
   export const ShieldIcon: Icon;
   export const CpuIcon: Icon;
+  export const ShareAndroidIcon: Icon;
+  export const DotFillIcon: Icon;
+  export const SearchIcon: Icon;
+  export const ChevronRightIcon: Icon;
+  export const ChevronDownIcon: Icon;
+  export const PencilIcon: Icon;
+  export const PlusIcon: Icon;
+  export const XIcon: Icon;
+  export const EyeIcon: Icon;
+  export const CodeIcon: Icon;
 }
 
 declare module '*.css' {}

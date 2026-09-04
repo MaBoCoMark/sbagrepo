@@ -56,6 +56,23 @@ pub fn get_app_runtime_config_path(app: &tauri::AppHandle) -> Result<PathBuf, St
     Ok(config_dir.join("runtime_config.json"))
 }
 
+/// 获取应用专属的订阅存储目录 (app_config_dir/subscription)
+pub fn get_app_subscription_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let config_dir = get_app_config_dir(app)?;
+    let sub_dir = config_dir.join("subscription");
+    if !sub_dir.exists() {
+        std::fs::create_dir_all(&sub_dir)
+            .map_err(|e| format!("创建订阅存储目录失败 ({:?}): {}", sub_dir, e))?;
+    }
+    Ok(sub_dir)
+}
+
+/// 获取持久化订阅元数据文件路径 (app_config_dir/subscriptions.json)
+pub fn get_app_subscriptions_file_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let config_dir = get_app_config_dir(app)?;
+    Ok(config_dir.join("subscriptions.json"))
+}
+
 /// 获取用户导入的可执行文件存放路径
 pub fn get_app_binary_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let config_dir = get_app_config_dir(app)?;

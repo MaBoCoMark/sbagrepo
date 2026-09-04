@@ -58,7 +58,13 @@ pub fn run() {
             commands::get_mitm_status,
             commands::import_ca_cert,
             commands::get_ca_cert_info,
-            commands::delete_ca_cert
+            commands::delete_ca_cert,
+            commands::load_subscriptions,
+            commands::save_subscription_metadata,
+            commands::save_subscription_file,
+            commands::read_subscription_file,
+            commands::delete_subscription_file,
+            commands::fetch_subscription_url
         ]);
 
     let app = builder

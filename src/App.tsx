@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { ThemeProvider, BaseStyles, UnderlineNav, Banner, Button } from '@primer/react';
-import { GearIcon, TerminalIcon, KeyIcon } from '@primer/octicons-react';
+import { GearIcon, TerminalIcon, KeyIcon, ShareAndroidIcon } from '@primer/octicons-react';
 
 import { Header } from './components/Header';
 import { ActionToolbar } from './components/ActionToolbar';
@@ -8,12 +8,13 @@ import { StatusCard } from './components/StatusCard';
 import { ConfigViewer } from './components/ConfigViewer';
 import { LogBoard } from './components/LogBoard';
 import { MitmPage } from './components/MitmPage';
+import { SubscriptionPage } from './components/SubscriptionPage';
 import { UnexpectedExitModal } from './components/UnexpectedExitModal';
 import { useSingboxConfig } from './hooks/useSingboxConfig';
 import { useLogBuffer } from './hooks/useLogBuffer';
 
 export const App: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<'console' | 'logs' | 'mitm'>('console');
+  const [activeTab, setActiveTab] = useState<'console' | 'logs' | 'mitm' | 'subscriptions'>('console');
 
   // 配置与运行状态管理通过解耦的 Hook 封装
   const {
@@ -109,6 +110,17 @@ export const App: React.FC = () => {
               >
                 MITM 代理与证书
               </UnderlineNav.Item>
+
+              <UnderlineNav.Item
+                aria-current={activeTab === 'subscriptions' ? 'page' : undefined}
+                onSelect={(e) => {
+                  e.preventDefault();
+                  setActiveTab('subscriptions');
+                }}
+                icon={ShareAndroidIcon}
+              >
+                订阅管理
+              </UnderlineNav.Item>
             </UnderlineNav>
           </div>
 
@@ -201,6 +213,8 @@ export const App: React.FC = () => {
             {activeTab === 'logs' && <LogBoard buffer={logBuffer} />}
 
             {activeTab === 'mitm' && <MitmPage singboxPort={effectivePort} />}
+
+            {activeTab === 'subscriptions' && <SubscriptionPage />}
           </main>
         </div>
       </BaseStyles>
